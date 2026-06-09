@@ -22,6 +22,11 @@ final class SephrTabModel: ObservableObject {
     private var persistPending: DispatchWorkItem?
     private static let persistDebounce: TimeInterval = 0.25
 
+    /// Bumped by persist(); writeNow() skips the encode when nothing new
+    /// was marked dirty since the last successful write.
+    private var changeCounter: UInt64 = 0
+    private var lastWrittenCounter: UInt64 = 0
+
     private init() {
         let session = SephrSessionStore.shared.loadSession()
         self.allTabs = session.tabs
@@ -516,6 +521,7 @@ final class SephrTabModel: ObservableObject {
     /// having to bounce through a mutation. The actual disk write is
     /// coalesced — see `persistPending`.
     func persist() {
+        changeCounter &+= 1
         persistPending?.cancel()
         let work = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
@@ -541,6 +547,8 @@ final class SephrTabModel: ObservableObject {
 
     private func writeNow() {
         persistPending = nil
+        guard changeCounter != lastWrittenCounter else { return }
+        lastWrittenCounter = changeCounter
         SephrSessionStore.shared.saveSession(tabs: allTabs,
                                               folders: allFolders)
     }

@@ -59,7 +59,14 @@ final class SephrTab: Codable, Identifiable {
         // Surface any cached favicon for this URL so a brand-new tab
         // that points at a familiar host renders the right icon
         // immediately. The cache is a no-op for never-visited hosts.
-        self.favicon = SephrFaviconCache.shared.get(for: url)
+        self.favicon = SephrFaviconCache.shared.cached(for: url)
+        // Disk lookup off the init path; the cell repaints via the
+        // favicon event.
+        SephrFaviconCache.shared.load(for: url) { [weak self] image in
+            guard let self, let image, self.favicon == nil else { return }
+            self.favicon = image
+            TabEventBus.shared.post(TabEvent(tabID: self.id, kind: .favicon))
+        }
     }
 
     // MARK: - Codable (exclude runtime members)
@@ -84,11 +91,18 @@ final class SephrTab: Codable, Identifiable {
         self.createdAt  = try c.decode(Date.self, forKey: .createdAt)
         self.lastAccessedAt = try c.decode(Date.self,
                                             forKey: .lastAccessedAt)
-        // Restore favicon from the disk-backed cache so the sidebar
-        // shows the page's icon immediately on relaunch — without
-        // this, every tab reverts to the SF-globe placeholder until
-        // Chromium re-downloads the icon.
-        self.favicon = SephrFaviconCache.shared.get(for: self.url)
+        // Restore favicon from the disk-backed cache. Memory hit is
+        // free; the disk read happens off the decode path so session
+        // restore isn't 40+ serial Data(contentsOf:) calls. The cell
+        // repaints via the favicon event when the icon arrives. (The
+        // completion hops to main; decode finishes long before disk IO
+        // returns, so the favicon read/write below doesn't race init.)
+        self.favicon = SephrFaviconCache.shared.cached(for: self.url)
+        SephrFaviconCache.shared.load(for: self.url) { [weak self] image in
+            guard let self, let image, self.favicon == nil else { return }
+            self.favicon = image
+            TabEventBus.shared.post(TabEvent(tabID: self.id, kind: .favicon))
+        }
     }
 
     // MARK: - WebView lifecycle

@@ -60,6 +60,38 @@ final class SephrFaviconCache: @unchecked Sendable {
         }
     }
 
+    /// Memory-only synchronous lookup — never touches disk. Safe on any
+    /// thread at any frequency.
+    func cached(for urlString: String) -> NSImage? {
+        guard let host = Self.host(for: urlString) else { return nil }
+        return queue.sync { memoryCache[host] }
+    }
+
+    /// Async disk-backed lookup. Completion always fires on the main
+    /// queue (including the no-host early return) so callers can update
+    /// UI state without re-dispatching.
+    func load(for urlString: String,
+              completion: @escaping @Sendable (NSImage?) -> Void) {
+        guard let host = Self.host(for: urlString) else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+        queue.async { [self] in
+            var result: NSImage? = memoryCache[host]
+            if result == nil, !negativeCache.contains(host) {
+                let file = directory.appendingPathComponent("\(host).png")
+                if let data = try? Data(contentsOf: file),
+                   let image = NSImage(data: data) {
+                    memoryCache[host] = image
+                    result = image
+                } else {
+                    negativeCache.insert(host)
+                }
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
     /// Persists `image` as the canonical favicon for `urlString`'s
     /// host. Subsequent `get(for:)` calls for that host return this
     /// image — both this session (in memory) and on relaunch (on disk).
