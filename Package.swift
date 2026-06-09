@@ -9,12 +9,19 @@ let package = Package(
         .executable(name: "Sephr", targets: ["Sephr"]),
         .executable(name: "sephr-smoke", targets: ["SephrSmoke"]),
         .library(name: "CAL", targets: ["CAL"]),
+        .library(name: "SephrKit", targets: ["SephrKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.26.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.5.2"),
     ],
     targets: [
+        // SephrKit — pure-Swift library (no Sephrium dependency) so app
+        // infrastructure like TabEventBus is importable from tests.
+        .target(name: "SephrKit", path: "sephrkit/Sources/SephrKit"),
+        .testTarget(name: "SephrKitTests",
+                    dependencies: ["SephrKit"],
+                    path: "sephrkit/Tests/SephrKitTests"),
         // CAL — ObjC++ bridge to Sephrium.framework.
         .target(
             name: "CAL",
@@ -48,6 +55,7 @@ let package = Package(
             name: "Sephr",
             dependencies: [
                 "CAL",
+                "SephrKit",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
