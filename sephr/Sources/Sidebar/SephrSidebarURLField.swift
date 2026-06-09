@@ -125,6 +125,8 @@ final class SephrSidebarURLField: NSView, NSTextFieldDelegate, NSPopoverDelegate
         // is active, so re-anchor the per-tab subscription too.
         structureToken = TabEventBus.shared.subscribeStructure { [weak self] in
             self?.resubscribeToActiveTab()
+            // resubscribeToActiveTab() already synced when it re-anchored;
+            // this trailing call covers its guard-short-circuit (same tab).
             self?.syncURL()
         }
         resubscribeToActiveTab()
@@ -132,12 +134,18 @@ final class SephrSidebarURLField: NSView, NSTextFieldDelegate, NSPopoverDelegate
     required init?(coder: NSCoder) { fatalError() }
 
     /// (Re-)subscribe to the CURRENT active tab so its `.url` updates
-    /// reach the field. Plain tab switches don't post structure events,
-    /// only per-tab `.active` to both sides — the OLD tab's `.active`
-    /// arrives on our current subscription, and the handler re-anchors
-    /// to the new active tab from there (activateTab flips the new tab
-    /// on before posting the old tab's deactivation, so `activeTab()`
-    /// already resolves to the new one when we land here).
+    /// reach the field. A plain tab switch posts per-tab `.active` to
+    /// both sides — the OLD tab's `.active` arrives on our current
+    /// subscription, and the handler re-anchors to the new active tab
+    /// from there (activateTab flips the new tab on before posting the
+    /// old tab's deactivation, so `activeTab()` already resolves to the
+    /// new one when we land here).
+    ///
+    /// Transition note: activateTab currently ALSO emits a structure
+    /// event for unmigrated legacy observers, which makes this `.active`
+    /// re-anchor look redundant. Once the cleanup task removes
+    /// activation's structure emit, this `.active` path is the ONLY way
+    /// the field follows a plain tab switch — do not remove.
     private func resubscribeToActiveTab() {
         let active = SephrTabModel.shared.activeTab()
         guard active?.id != lastSubscribedTabID else { return }
@@ -162,7 +170,7 @@ final class SephrSidebarURLField: NSView, NSTextFieldDelegate, NSPopoverDelegate
         field.currentEditor()?.selectAll(nil)
     }
 
-    @objc private func syncURL() {
+    private func syncURL() {
         let active = SephrTabModel.shared.activeTab()
         // Prefer the web view's live committed URL (GetLastCommittedURL,
         // always canonical) over the cached `tab.url`. The cache is updated

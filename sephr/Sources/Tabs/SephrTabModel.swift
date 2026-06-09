@@ -74,9 +74,9 @@ final class SephrTabModel: ObservableObject {
         // target's own flag.) Re-activation posts nothing — setActive
         // only fires on an actual flag change.
         tab.lastAccessedAt = Date()
-        setActive(tab, true)
+        setActive(tab, to: true)
         for t in allTabs where t.id != tab.id {
-            setActive(t, false)
+            setActive(t, to: false)
         }
         // Persist so the "which tab was selected" state survives a
         // relaunch — otherwise the previously-active tab from the
@@ -90,7 +90,7 @@ final class SephrTabModel: ObservableObject {
     /// synchronous and subscribers read the model from their handlers,
     /// so call sites must not invoke this mid-mutation: complete the
     /// structural change first, then flip.
-    private func setActive(_ tab: SephrTab, _ flag: Bool) {
+    private func setActive(_ tab: SephrTab, to flag: Bool) {
         guard tab.isActive != flag else { return }
         tab.isActive = flag
         TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .active))
@@ -345,7 +345,7 @@ final class SephrTabModel: ObservableObject {
         // belongs elsewhere: drop the active flag (no-op when the tab
         // wasn't active) and let `promoteActiveIfNeeded()` re-anchor
         // the current space.
-        setActive(tab, false)
+        setActive(tab, to: false)
         promoteActiveIfNeeded()
         emit(); persist()
     }
@@ -372,7 +372,7 @@ final class SephrTabModel: ObservableObject {
         // `.active` posts observe a consistent, fully-moved model.
         // setActive no-ops for the (typical) inactive members.
         for tab in allTabs where tab.folderID == folder.id {
-            setActive(tab, false)
+            setActive(tab, to: false)
         }
         promoteActiveIfNeeded()
         emit(); persist()
@@ -388,7 +388,7 @@ final class SephrTabModel: ObservableObject {
         guard !curTabs.isEmpty,
               !curTabs.contains(where: { $0.isActive }) else { return }
         if let promoted = curTabs.first {
-            setActive(promoted, true)
+            setActive(promoted, to: true)
         }
     }
 

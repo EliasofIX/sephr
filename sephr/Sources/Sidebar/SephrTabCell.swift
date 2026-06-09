@@ -193,7 +193,7 @@ final class SephrTabCell: NSView {
                 titleLabel.stringValue = newTitle
             }
         case .loading:
-            break  // spinner driven by .sephrTabLoadingChanged
+            break  // .loading: no cell-level UI; loading indicator lives in SephrWindowController
         }
     }
 

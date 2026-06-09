@@ -402,7 +402,7 @@ final class SephrSidebarView: NSView {
         spaceHeader.apply(space: space, isCollapsed: foldersCollapsed)
     }
 
-    @objc private func renderTabs() {
+    private func renderTabs() {
         let space = SephrSpaceManager.shared.currentSpace
         let folders = SephrTabModel.shared.folders(in: space)
         let topLevelTabs = SephrTabModel.shared.tabs(in: space)

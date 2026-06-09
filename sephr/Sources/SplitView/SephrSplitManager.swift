@@ -1,4 +1,5 @@
 import Foundation
+import SephrKit
 
 /// Holds the single active split-tab group — the two tabs that are shown
 /// side by side. This is the *grouping*, which is distinct from whether
@@ -46,6 +47,12 @@ final class SephrSplitManager {
     }
 
     private func notify() {
+        // Split membership is structure-shaped for the sidebar: forming or
+        // breaking a group changes which cells exist (two pills vs one
+        // combined SephrSplitTabCell), so it must go out as a structure event.
+        TabEventBus.shared.postStructure()
+        // Legacy notification — kept for unmigrated observers; dies in the
+        // cleanup task.
         NotificationCenter.default.post(name: .sephrTabModelChanged, object: nil)
     }
 }
