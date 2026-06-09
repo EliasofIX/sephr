@@ -1,8 +1,9 @@
+import Dispatch
 import Foundation
 
 /// Per-tab change kinds. `structure` (add/remove/reorder) has its own
 /// channel — see `subscribeStructure`.
-public struct TabEvent {
+public struct TabEvent: Equatable {
     public enum Kind: Equatable { case title, favicon, active, url, loading }
     public let tabID: UUID
     public let kind: Kind
@@ -30,37 +31,52 @@ public final class TabEventToken {
 /// the sidebar subscribes to structure only.
 public final class TabEventBus {
     public static let shared = TabEventBus()
-    private var perTab: [UUID: [(UUID, (TabEvent) -> Void)]] = [:]
-    private var structure: [(UUID, () -> Void)] = []
+    private var perTab: [UUID: [(id: UUID, handler: (TabEvent) -> Void)]] = [:]
+    private var structure: [(id: UUID, handler: () -> Void)] = []
+
+    /// Independent instances are supported, primarily for tests.
     public init() {}
 
+    /// The bus retains `handler` until the token is released; capture `self`
+    /// weakly in the handler, or the token (typically stored on `self`) will
+    /// never deallocate.
     public func subscribe(tabID: UUID,
                           handler: @escaping (TabEvent) -> Void) -> TabEventToken {
+        dispatchPrecondition(condition: .onQueue(.main))
         let token = TabEventToken(bus: self, tabID: tabID)
         perTab[tabID, default: []].append((token.id, handler))
         return token
     }
 
+    /// The bus retains `handler` until the token is released; capture `self`
+    /// weakly in the handler, or the token (typically stored on `self`) will
+    /// never deallocate.
     public func subscribeStructure(handler: @escaping () -> Void) -> TabEventToken {
+        dispatchPrecondition(condition: .onQueue(.main))
         let token = TabEventToken(bus: self, tabID: nil)
         structure.append((token.id, handler))
         return token
     }
 
     public func post(_ event: TabEvent) {
-        perTab[event.tabID]?.forEach { $0.1(event) }
-    }
+        dispatchPrecondition(condition: .onQueue(.main))
+        let handlers = perTab[event.tabID] ?? []   // snapshot: handlers added during
+        handlers.forEach { $0.handler(event) }     // post don't see this event; removed
+    }                                              // ones still receive it
 
     public func postStructure() {
-        structure.forEach { $0.1() }
+        dispatchPrecondition(condition: .onQueue(.main))
+        let handlers = structure                   // snapshot (see post)
+        handlers.forEach { $0.handler() }
     }
 
     fileprivate func unsubscribe(token: TabEventToken) {
+        dispatchPrecondition(condition: .onQueue(.main))
         if let tabID = token.tabID {
-            perTab[tabID]?.removeAll { $0.0 == token.id }
+            perTab[tabID]?.removeAll { $0.id == token.id }
             if perTab[tabID]?.isEmpty == true { perTab[tabID] = nil }
         } else {
-            structure.removeAll { $0.0 == token.id }
+            structure.removeAll { $0.id == token.id }
         }
     }
 }
