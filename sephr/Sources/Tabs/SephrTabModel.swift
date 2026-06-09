@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import SephrKit
 
 @MainActor
 final class SephrTabModel: ObservableObject {
@@ -64,8 +65,13 @@ final class SephrTabModel: ObservableObject {
     }
 
     func activateTab(_ tab: SephrTab) {
+        let previouslyActive = allTabs.filter { $0.isActive && $0.id != tab.id }
         for t in allTabs { t.isActive = (t.id == tab.id) }
         tab.lastAccessedAt = Date()
+        for prev in previouslyActive {
+            TabEventBus.shared.post(TabEvent(tabID: prev.id, kind: .active))
+        }
+        TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .active))
         // Persist so the "which tab was selected" state survives a
         // relaunch — otherwise the previously-active tab from the
         // saved session is the one that opens, not the one the user
@@ -290,7 +296,10 @@ final class SephrTabModel: ObservableObject {
         // current space, the main window would be left showing a page
         // that now belongs elsewhere. Drop the active flag here and let
         // `promoteActiveIfNeeded()` re-anchor the current space below.
-        if tab.isActive { tab.isActive = false }
+        if tab.isActive {
+            tab.isActive = false
+            TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .active))
+        }
 
         tab.spaceID = space.id
         tab.folder = nil
@@ -336,7 +345,10 @@ final class SephrTabModel: ObservableObject {
 
         folder.spaceID = space.id
         for tab in allTabs where tab.folderID == folder.id {
-            if tab.isActive { tab.isActive = false }
+            if tab.isActive {
+                tab.isActive = false
+                TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .active))
+            }
             tab.spaceID = space.id
             if crossProfile {
                 tab.webView?.removeFromSuperview()
@@ -356,7 +368,10 @@ final class SephrTabModel: ObservableObject {
         let curTabs = allTabs.filter { $0.spaceID == cur && !$0.isArchived }
         guard !curTabs.isEmpty,
               !curTabs.contains(where: { $0.isActive }) else { return }
-        curTabs.first?.isActive = true
+        if let promoted = curTabs.first {
+            promoted.isActive = true
+            TabEventBus.shared.post(TabEvent(tabID: promoted.id, kind: .active))
+        }
     }
 
     /// Rename / re-symbol a folder in place. Persists + emits so every
@@ -467,7 +482,13 @@ final class SephrTabModel: ObservableObject {
         }
     }
 
+    /// Structure-level change (add/remove/reorder/move). Tab-scoped changes
+    /// (title/url/favicon/active/loading) post TabEvent directly and must
+    /// NOT call this.
     private func emit() {
+        TabEventBus.shared.postStructure()
+        // Legacy broadcast — removed in the cleanup task once all
+        // observers are migrated to TabEventBus.
         NotificationCenter.default.post(name: .sephrTabModelChanged,
                                          object: nil)
     }

@@ -1,5 +1,6 @@
 import AppKit
 import CAL
+import SephrKit
 
 /// A single tab, owned by SephrTabModel. The CALWebView is lazily created
 /// on first display and held weakly by the window controller.
@@ -108,6 +109,8 @@ final class SephrTab: Codable, Identifiable {
             // this the session file keeps the URL the tab was created
             // with, never what the user actually navigated to.
             SephrTabModel.shared.persist()
+            TabEventBus.shared.post(TabEvent(tabID: self.id, kind: .url))
+            TabEventBus.shared.post(TabEvent(tabID: self.id, kind: .title))
             NotificationCenter.default.post(
                 name: .sephrTabModelChanged, object: nil)
         }
@@ -119,12 +122,14 @@ final class SephrTab: Codable, Identifiable {
                 // wait for Chromium to re-download.
                 SephrFaviconCache.shared.set(image, for: self.url)
             }
+            TabEventBus.shared.post(TabEvent(tabID: self.id, kind: .favicon))
             NotificationCenter.default.post(
                 name: .sephrTabModelChanged, object: nil)
         }
         wv.onLoading = { [weak self] (loading: Bool, _: Double) in
             guard let self else { return }
             self.isLoading = loading
+            TabEventBus.shared.post(TabEvent(tabID: self.id, kind: .loading))
             NotificationCenter.default.post(
                 name: .sephrTabLoadingChanged, object: self)
         }
