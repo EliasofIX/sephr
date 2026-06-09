@@ -1,4 +1,5 @@
 import AppKit
+import SephrKit
 
 protocol SephrSidebarViewDelegate: AnyObject {
     func sidebarDidSelectTab(_ tab: SephrTab)
@@ -48,12 +49,17 @@ final class SephrSidebarView: NSView {
     private var foldersCollapsed = false
 
     /// Last rendered structure key — IDs + flags that decide which
-    /// cells exist and in what order. `.sephrTabModelChanged` fires
-    /// for state-only updates too (active tab, title, favicon, loading)
-    /// so without this guard `renderTabs()` would tear down and rebuild
-    /// every cell on every keystroke a renderer commits. Cells already
-    /// observe the notification themselves to refresh in place.
+    /// cells exist and in what order. The bus's structure channel still
+    /// fires for changes that don't affect THIS space's layout (e.g.
+    /// pin reorder, folder rename, activation's parallel-run emit), so
+    /// without this guard `renderTabs()` would tear down and rebuild
+    /// every cell needlessly. Cells subscribe per-tab themselves to
+    /// refresh state (title / favicon / active) in place.
     private var lastStructureKey: String = ""
+
+    /// Structure-channel subscription driving `renderTabs()`. Dropping
+    /// the token unsubscribes, so it lives for the view's lifetime.
+    private var structureToken: TabEventToken?
 
     /// Accumulator for 2-finger horizontal trackpad swipes. Once it
     /// crosses `swipeThreshold` the sidebar switches to the next /
@@ -405,7 +411,7 @@ final class SephrSidebarView: NSView {
         // Structure key = anything that decides which cells exist or
         // in what order. Title / URL / favicon / active-tab changes
         // bypass this rebuild because they don't affect the key — the
-        // cells themselves observe `.sephrTabModelChanged` and refresh
+        // cells subscribe to their own tab's events and refresh
         // in place. With this guard, the common-case nav update
         // becomes a couple of NSTextField mutations instead of a
         // teardown + reallocation of every cell in the stack.
@@ -626,11 +632,12 @@ final class SephrSidebarView: NSView {
     // MARK: — Notifications
 
     private func bindNotifications() {
-        let nc = NotificationCenter.default
-        nc.addObserver(self, selector: #selector(renderTabs),
-                       name: .sephrTabModelChanged, object: nil)
-        nc.addObserver(self, selector: #selector(onSpaceChanged),
-                       name: .sephrSpaceChanged, object: nil)
+        structureToken = TabEventBus.shared.subscribeStructure { [weak self] in
+            self?.renderTabs()
+        }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(onSpaceChanged),
+            name: .sephrSpaceChanged, object: nil)
     }
 
     @objc private func onSpaceChanged() { renderAll() }

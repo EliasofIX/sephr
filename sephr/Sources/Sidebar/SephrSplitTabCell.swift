@@ -1,4 +1,5 @@
 import AppKit
+import SephrKit
 
 /// Sidebar representation of a split-tab group: the two split tabs shown
 /// as one row of two side-by-side pills (favicon + title each), matching
@@ -13,6 +14,11 @@ final class SephrSplitTabCell: NSView {
 
     private let primaryHalf: SephrSplitHalfView
     private let secondaryHalf: SephrSplitHalfView
+
+    /// One subscription per member tab — each half refreshes on its own
+    /// tab's events. Dropping the tokens unsubscribes.
+    private var primaryToken: TabEventToken?
+    private var secondaryToken: TabEventToken?
 
     init(primary: SephrTab, secondary: SephrTab) {
         self.primary = primary
@@ -51,17 +57,19 @@ final class SephrSplitTabCell: NSView {
                 equalTo: secondaryHalf.widthAnchor),
         ])
 
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(refresh),
-            name: .sephrTabModelChanged, object: nil)
+        // `refresh()` repaints favicon + title + active-dim in one go,
+        // so any event kind maps to the same cheap refresh of the half
+        // it belongs to.
+        primaryToken = TabEventBus.shared.subscribe(tabID: primary.id) {
+            [weak self] _ in
+            self?.primaryHalf.refresh()
+        }
+        secondaryToken = TabEventBus.shared.subscribe(tabID: secondary.id) {
+            [weak self] _ in
+            self?.secondaryHalf.refresh()
+        }
     }
     required init?(coder: NSCoder) { fatalError() }
-    deinit { NotificationCenter.default.removeObserver(self) }
-
-    @objc private func refresh() {
-        primaryHalf.refresh()
-        secondaryHalf.refresh()
-    }
 }
 
 /// One half of a `SephrSplitTabCell` — a glass pill with a tab's favicon

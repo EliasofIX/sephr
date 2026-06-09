@@ -1,4 +1,5 @@
 import AppKit
+import SephrKit
 
 protocol SephrTabCellDelegate: AnyObject {
     func tabCellDidSelect(_ cell: SephrTabCell)
@@ -28,6 +29,9 @@ final class SephrTabCell: NSView {
     private var peekPopover: SephrPeekPopover?
     private var compact = false
     private var hovered = false
+    /// Per-tab event subscription — dropping the token unsubscribes,
+    /// so it lives for the cell's lifetime.
+    private var eventToken: TabEventToken?
 
     init(tab: SephrTab) {
         self.tab = tab
@@ -43,9 +47,9 @@ final class SephrTabCell: NSView {
         favicon.translatesAutoresizingMaskIntoConstraints = false
         refreshFavicon()
 
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(onTabModelChanged),
-            name: .sephrTabModelChanged, object: nil)
+        eventToken = TabEventBus.shared.subscribe(tabID: tab.id) { [weak self] event in
+            self?.onTabEvent(event)
+        }
 
         titleLabel.stringValue = tab.title.isEmpty ? tab.url : tab.title
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -170,19 +174,26 @@ final class SephrTabCell: NSView {
         }
     }
 
-    @objc private func onTabModelChanged() {
-        // The active-tab pill must track selection. `activateTab` flips
-        // `isActive` on the (reference-type) tabs in the model's array,
-        // which doesn't republish the @Published array, so the sidebar
-        // never rebuilds these cells on a plain tab switch — it relies on
-        // this notification. Without refreshing appearance here the
-        // highlight stayed stuck on the previously-active cell, making a
-        // successful click look like it did nothing.
-        refreshAppearance()
-        refreshFavicon()
-        let newTitle = tab.title.isEmpty ? tab.url : tab.title
-        if titleLabel.stringValue != newTitle {
-            titleLabel.stringValue = newTitle
+    private func onTabEvent(_ event: TabEvent) {
+        switch event.kind {
+        case .active:
+            // The active-tab pill must track selection. `activateTab`
+            // flips `isActive` on the (reference-type) tabs in the
+            // model's array, which doesn't republish the @Published
+            // array, so the sidebar never rebuilds these cells on a
+            // plain tab switch. Both sides of a switch get their own
+            // `.active` post, so refreshing here keeps the highlight
+            // in step on this cell whether it gained or lost focus.
+            refreshAppearance()
+        case .favicon:
+            refreshFavicon()
+        case .title, .url:
+            let newTitle = tab.title.isEmpty ? tab.url : tab.title
+            if titleLabel.stringValue != newTitle {
+                titleLabel.stringValue = newTitle
+            }
+        case .loading:
+            break  // spinner driven by .sephrTabLoadingChanged
         }
     }
 

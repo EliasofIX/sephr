@@ -1,4 +1,5 @@
 import AppKit
+import SephrKit
 
 /// Grid of cross-space pinned tabs at the top of the sidebar.
 ///
@@ -44,6 +45,10 @@ final class SephrFavoritesRow: NSView {
     private var compact = false
     private var lastKey: String = ""
 
+    /// Structure-channel subscription driving `reload()` (pin/unpin/
+    /// reorder all post structure). Dropping the token unsubscribes.
+    private var structureToken: TabEventToken?
+
     /// Thin caret painted between chips during a drag to show where the
     /// dropped (or reordered) pin will land. Frame-positioned manually in
     /// `dropSlot`; hidden whenever no drag is hovering.
@@ -80,9 +85,9 @@ final class SephrFavoritesRow: NSView {
         insertionBar.isHidden = true
         addSubview(insertionBar, positioned: .above, relativeTo: stack)
 
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(reload),
-            name: .sephrTabModelChanged, object: nil)
+        structureToken = TabEventBus.shared.subscribeStructure { [weak self] in
+            self?.reload()
+        }
 
         Task { @MainActor in reload() }
     }
@@ -215,6 +220,8 @@ private final class SephrFavoriteCell: NSView {
     /// Matches `SephrTabCell.dragSlop` — below this, sub-threshold trackpad
     /// jitter shouldn't tear the chip out and swallow the click.
     private static let dragSlop: CGFloat = 10
+    /// Per-tab event subscription — dropping the token unsubscribes.
+    private var eventToken: TabEventToken?
 
     init(tab: SephrTab, compact: Bool) {
         self.tab = tab
@@ -240,9 +247,9 @@ private final class SephrFavoriteCell: NSView {
         addSubview(image)
         refreshFavicon()
 
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(onTabModelChanged),
-            name: .sephrTabModelChanged, object: nil)
+        eventToken = TabEventBus.shared.subscribe(tabID: tab.id) { [weak self] event in
+            self?.onTabEvent(event)
+        }
 
         if compact {
             // Compact: fixed 28pt square — fits the 52pt-wide compact
@@ -431,11 +438,17 @@ private final class SephrFavoriteCell: NSView {
         }
     }
 
-    @objc private func onTabModelChanged() {
-        refreshFavicon()
-        // The active-tab flag may have flipped (user switched tabs);
-        // re-tint so the pin's selected/idle state matches the model.
-        refreshAppearance()
+    private func onTabEvent(_ event: TabEvent) {
+        switch event.kind {
+        case .favicon:
+            refreshFavicon()
+        case .active:
+            // The active-tab flag flipped (user switched tabs); re-tint
+            // so the pin's selected/idle state matches the model.
+            refreshAppearance()
+        case .title, .url, .loading:
+            break  // chip renders favicon only — nothing to update
+        }
     }
 }
 

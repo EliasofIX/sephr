@@ -65,18 +65,35 @@ final class SephrTabModel: ObservableObject {
     }
 
     func activateTab(_ tab: SephrTab) {
-        let previouslyActive = allTabs.filter { $0.isActive && $0.id != tab.id }
-        for t in allTabs { t.isActive = (t.id == tab.id) }
+        // Activate the target FIRST, then deactivate the others. The
+        // old tab's `.active` post must observe a model where
+        // `activeTab()` already resolves to the new tab — the URL
+        // field re-anchors its per-tab subscription from exactly that
+        // event. (The brief two-actives overlap during the target's
+        // own post is harmless: the target's subscribers only read the
+        // target's own flag.) Re-activation posts nothing — setActive
+        // only fires on an actual flag change.
         tab.lastAccessedAt = Date()
-        for prev in previouslyActive {
-            TabEventBus.shared.post(TabEvent(tabID: prev.id, kind: .active))
+        setActive(tab, true)
+        for t in allTabs where t.id != tab.id {
+            setActive(t, false)
         }
-        TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .active))
         // Persist so the "which tab was selected" state survives a
         // relaunch — otherwise the previously-active tab from the
         // saved session is the one that opens, not the one the user
         // last clicked.
         emit(); persist()
+    }
+
+    /// Single source of truth for `isActive` flips: changes the flag
+    /// and posts `.active` — only on an actual change. The post is
+    /// synchronous and subscribers read the model from their handlers,
+    /// so call sites must not invoke this mid-mutation: complete the
+    /// structural change first, then flip.
+    private func setActive(_ tab: SephrTab, _ flag: Bool) {
+        guard tab.isActive != flag else { return }
+        tab.isActive = flag
+        TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .active))
     }
 
     func pinTab(_ tab: SephrTab, pinned: Bool) {
@@ -292,14 +309,6 @@ final class SephrTabModel: ObservableObject {
         let oldSpaceID = tab.spaceID
         let oldProfile = SephrSpaceManager.shared.spaces
             .first(where: { $0.id == oldSpaceID })?.profileID
-        // If we're carrying the single global active tab out of the
-        // current space, the main window would be left showing a page
-        // that now belongs elsewhere. Drop the active flag here and let
-        // `promoteActiveIfNeeded()` re-anchor the current space below.
-        if tab.isActive {
-            tab.isActive = false
-            TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .active))
-        }
 
         tab.spaceID = space.id
         tab.folder = nil
@@ -329,6 +338,14 @@ final class SephrTabModel: ObservableObject {
             allTabs.insert(tab, at: insertAt)
         }
 
+        // Posts are deferred to here — after the structural mutation —
+        // so subscribers never observe a half-moved model. If we
+        // carried the single global active tab out of the current
+        // space, the main window would be left showing a page that now
+        // belongs elsewhere: drop the active flag (no-op when the tab
+        // wasn't active) and let `promoteActiveIfNeeded()` re-anchor
+        // the current space.
+        setActive(tab, false)
         promoteActiveIfNeeded()
         emit(); persist()
     }
@@ -345,15 +362,17 @@ final class SephrTabModel: ObservableObject {
 
         folder.spaceID = space.id
         for tab in allTabs where tab.folderID == folder.id {
-            if tab.isActive {
-                tab.isActive = false
-                TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .active))
-            }
             tab.spaceID = space.id
             if crossProfile {
                 tab.webView?.removeFromSuperview()
                 tab.webView = nil
             }
+        }
+        // Deactivation deferred until after the re-stamp loop so the
+        // `.active` posts observe a consistent, fully-moved model.
+        // setActive no-ops for the (typical) inactive members.
+        for tab in allTabs where tab.folderID == folder.id {
+            setActive(tab, false)
         }
         promoteActiveIfNeeded()
         emit(); persist()
@@ -369,8 +388,7 @@ final class SephrTabModel: ObservableObject {
         guard !curTabs.isEmpty,
               !curTabs.contains(where: { $0.isActive }) else { return }
         if let promoted = curTabs.first {
-            promoted.isActive = true
-            TabEventBus.shared.post(TabEvent(tabID: promoted.id, kind: .active))
+            setActive(promoted, true)
         }
     }
 

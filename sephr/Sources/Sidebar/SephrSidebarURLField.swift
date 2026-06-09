@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import CAL
+import SephrKit
 
 /// Inline URL input inside the sidebar (Zen-style — no horizontal
 /// titlebar). Submits to the active SephrTab or opens a new tab when
@@ -9,6 +10,14 @@ final class SephrSidebarURLField: NSView, NSTextFieldDelegate, NSPopoverDelegate
 
     private let field = NSTextField()
     private var lastSyncedTabID: UUID?
+
+    /// Bus subscriptions. `structureToken` lives for the field's
+    /// lifetime; `activeTabToken` is swapped every time the active-tab
+    /// identity moves (see `resubscribeToActiveTab`). Dropping a token
+    /// unsubscribes.
+    private var structureToken: TabEventToken?
+    private var activeTabToken: TabEventToken?
+    private var lastSubscribedTabID: UUID?
 
     /// Trailing action buttons that fade in over the pill while the
     /// sidebar is hovered: copy-link and the page-settings popover.
@@ -110,13 +119,43 @@ final class SephrSidebarURLField: NSView, NSTextFieldDelegate, NSPopoverDelegate
             actionCluster.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
 
-        // Sync the field text to the active tab's URL whenever the model
-        // changes (but don't stomp text mid-edit).
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(syncURL),
-            name: .sephrTabModelChanged, object: nil)
+        // Sync the field text to the active tab's URL whenever the
+        // model changes (but don't stomp text mid-edit). Structure
+        // events (tab created / closed / moved) can change which tab
+        // is active, so re-anchor the per-tab subscription too.
+        structureToken = TabEventBus.shared.subscribeStructure { [weak self] in
+            self?.resubscribeToActiveTab()
+            self?.syncURL()
+        }
+        resubscribeToActiveTab()
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    /// (Re-)subscribe to the CURRENT active tab so its `.url` updates
+    /// reach the field. Plain tab switches don't post structure events,
+    /// only per-tab `.active` to both sides — the OLD tab's `.active`
+    /// arrives on our current subscription, and the handler re-anchors
+    /// to the new active tab from there (activateTab flips the new tab
+    /// on before posting the old tab's deactivation, so `activeTab()`
+    /// already resolves to the new one when we land here).
+    private func resubscribeToActiveTab() {
+        let active = SephrTabModel.shared.activeTab()
+        guard active?.id != lastSubscribedTabID else { return }
+        lastSubscribedTabID = active?.id
+        activeTabToken = nil
+        if let active {
+            activeTabToken = TabEventBus.shared.subscribe(tabID: active.id) {
+                [weak self] event in
+                if event.kind == .active {
+                    self?.resubscribeToActiveTab()
+                }
+                if event.kind == .url || event.kind == .active {
+                    self?.syncURL()
+                }
+            }
+        }
+        syncURL()
+    }
 
     func makeFirstResponder() {
         window?.makeFirstResponder(field)
