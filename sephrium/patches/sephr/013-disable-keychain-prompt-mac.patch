@@ -1,0 +1,123 @@
+# Sephr — 013-disable-keychain-prompt-mac
+#
+# Stock Chromium's OSCrypt on macOS uses SecKeychain to read/write a
+# randomly-generated 128-bit "Safe Storage" key. On first launch it
+# triggers a Keychain authorization dialog asking the user for their
+# *login keychain* password ("Sephr wants to use your confidential
+# information stored in 'Chromium Safe Storage' in your keychain").
+# That dialog is unanswerable — there is no obvious password — and
+# clicking Deny silently breaks cookie/localState encryption for the
+# session.
+#
+# Replace `KeychainPassword::GetPassword()` with file-backed storage
+# under `~/Library/Application Support/Sephr/sephr_safe_storage.key`.
+# The file is created with mode 0600 (owner-only). On first launch it
+# writes a fresh 128-bit base64-encoded key; subsequent launches read
+# the existing file.
+#
+# Future hardening: wrap the file key with a TouchID-protected secret
+# via SecureEnclave + a small CAL surface. For now this matches stock
+# Chromium's "basic" password store posture (file on disk, no Keychain).
+#
+# Also unused-but-kept: `GetPasswordImpl` and `g_last_keychain_error`
+# stay in the source for upstream alignment but no longer compile-warn
+# (suppressed below).
+
+--- a/components/os_crypt/common/keychain_password_mac.mm
++++ b/components/os_crypt/common/keychain_password_mac.mm
+@@ -12,8 +12,12 @@
+ #include "base/apple/scoped_cftyperef.h"
+ #include "base/base64.h"
+ #include "base/containers/span.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/logging.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/no_destructor.h"
++#include "base/path_service.h"
+ #include "base/rand_util.h"
+ #include "base/strings/string_view_util.h"
+ #include "base/types/expected.h"
+@@ -125,18 +129,72 @@
+ 
+ KeychainPassword::~KeychainPassword() = default;
+ 
+-std::string KeychainPassword::GetPassword() const {
+-  auto password =
+-      GetPasswordImpl(*keychain_, GetServiceName(), GetAccountName());
++namespace {
+ 
+-  OSStatus current_status = password.has_value() ? noErr : password.error();
+-  OSStatus previous_error =
+-      g_last_keychain_error.exchange(current_status, std::memory_order_relaxed);
++// Sephr: file-backed storage replacement for the macOS Keychain.
++//
++// Stock Chromium uses `SecKeychain*` to read/write a randomly-generated
++// 128-bit key under the service "Chromium Safe Storage". The first call
++// surfaces a Keychain authorization dialog ("Sephr wants to use your
++// confidential information stored in Chromium Safe Storage in your
++// keychain") that asks for the user's *login keychain* password. From
++// the user's perspective this is unanswerable — there's no obvious
++// password — and Deny breaks OSCrypt (cookies, etc.) for the session.
++//
++// Sephr ships its own at-rest key under the user data dir instead.
++// Permission bits restrict it to the owner (0600). Future hardening
++// can wrap this with a TouchID-protected secret or move it to our own
++// SecureEnclave-backed surface via CAL.
++constexpr char kSephrKeyFile[] = "sephr_safe_storage.key";
+ 
+-  if (current_status == noErr && previous_error != noErr) {
+-    base::UmaHistogramSparse("OSCrypt.Mac.SuccessAfterPreviousError",
+-                             previous_error);
++base::FilePath SephrKeyPath() {
++  // Anchor at ~/Library/Application Support/Sephr/ (NOT inside the
++  // --user-data-dir profile root — we want the key to survive a profile
++  // wipe). `base::DIR_APP_DATA` on macOS resolves to
++  //   ~/Library/Application Support
++  // so we tack on /Sephr/ to stay namespaced.
++  base::FilePath dir;
++  if (!base::PathService::Get(base::DIR_APP_DATA, &dir)) {
++    base::PathService::Get(base::DIR_HOME, &dir);
+   }
++  dir = dir.AppendASCII("Sephr");
++  // Best-effort mkdir — if it fails we'll find out on WriteFile below.
++  base::CreateDirectory(dir);
++  return dir.Append(kSephrKeyFile);
++}
+ 
+-  return password.value_or(std::string());
++std::string ReadOrCreateSephrKey() {
++  base::FilePath path = SephrKeyPath();
++  std::string existing;
++  if (base::ReadFileToString(path, &existing) && !existing.empty()) {
++    return existing;
++  }
++
++  // Generate a fresh 128-bit key, base64-encoded to match Chromium's
++  // wire format (the on-disk format Keychain used too).
++  constexpr int kBytes = 128 / 8;
++  std::string password = base::Base64Encode(base::RandBytesAsVector(kBytes));
++
++  if (!base::WriteFile(path, password)) {
++    LOG(WARNING) << "Sephr: failed to persist OSCrypt key to "
++                 << path.value() << " — re-deriving every launch.";
++  } else {
++    // Tighten permissions to owner-only.
++    base::SetPosixFilePermissions(path,
++                                  base::FILE_PERMISSION_READ_BY_USER |
++                                  base::FILE_PERMISSION_WRITE_BY_USER);
++  }
++  return password;
+ }
++
++}  // namespace
++
++std::string KeychainPassword::GetPassword() const {
++  // Sephr: never touch the macOS Keychain — see ReadOrCreateSephrKey above.
++  // The original Chromium implementation (kept in GetPasswordImpl for
++  // upstream alignment but unused here) reads from
++  // `SecKeychainFindGenericPassword` and falls back to writing a new
++  // entry, which always triggers the "Sephr wants to use … Chromium Safe
++  // Storage" dialog on first launch.
++  return ReadOrCreateSephrKey();
++}

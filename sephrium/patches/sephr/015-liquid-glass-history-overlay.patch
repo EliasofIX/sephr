@@ -1,0 +1,131 @@
+# Sephr — 015-liquid-glass-history-overlay
+#
+# Restyle the back/forward history-swipe shield (the circle + arrow that
+# appears during a two-finger trackpad navigation gesture) as a real
+# macOS 26 Liquid Glass orb instead of Chromium's dim translucent-black
+# semicircle.
+#
+# Touches only HistoryOverlayView in
+# chrome/browser/ui/cocoa/history_overlay_controller.mm — the gesture
+# math, geometry, and HistoryOverlayController are unchanged.
+#
+#   * macOS 26+: the shield is an NSGlassEffectView (style Regular,
+#     cornerRadius = kShieldRadius) so the 140pt circle hugs the window
+#     edge as a genuine glass lens that refracts/tints the page behind
+#     it. The swipe arrow is a template copy of the resource image tinted
+#     NSColor.labelColor (the original light-on-black art would wash out
+#     on light glass) and is layered as a sibling above the glass so its
+#     placement in the visible half is preserved. shieldAlpha now drives
+#     the orb's alphaValue, mirroring the original [0.25, 0.75] fade-in.
+#
+#   * Pre-macOS 26: unchanged — falls back to the original CAShapeLayer
+#     black-fill semicircle (guarded by `if (@available(macOS 26.0,*))`,
+#     mandatory because mac_deployment_target is 12.0).
+#
+# Both branches are exercised at runtime; the ivar holding the glass view
+# is typed NSView* so the .mm does not require the macOS 26 symbol at the
+# ivar level.
+#
+diff --git a/chrome/browser/ui/cocoa/history_overlay_controller.mm b/chrome/browser/ui/cocoa/history_overlay_controller.mm
+index a032a22..d6b56ac 100644
+--- a/chrome/browser/ui/cocoa/history_overlay_controller.mm
++++ b/chrome/browser/ui/cocoa/history_overlay_controller.mm
+@@ -39,7 +39,12 @@ const CGFloat kShieldHeightCompletionAdjust = 10;
+ 
+ @implementation HistoryOverlayView {
+   HistoryOverlayMode _mode;
++  // Pre-macOS 26 fallback: a dim translucent-black semicircle.
+   CAShapeLayer* __strong _shapeLayer;
++  // macOS 26+: a real Liquid Glass orb (NSGlassEffectView, stored as its base
++  // type so the ivar doesn't require the macOS 26 SDK symbol). nil on the
++  // fallback path.
++  NSView* __strong _glassView;
+ }
+ 
+ @synthesize shieldAlpha = _shieldAlpha;
+@@ -48,12 +53,27 @@ const CGFloat kShieldHeightCompletionAdjust = 10;
+   NSRect frame = NSMakeRect(0, 0, kShieldWidth, kShieldHeight);
+   if ((self = [super initWithFrame:frame])) {
+     _mode = mode;
+-    _shieldAlpha = 1.0;  // CAShapeLayer's fillColor defaults to opaque black.
+-
+-    // A layer-hosting view.
+-    _shapeLayer = [[CAShapeLayer alloc] init];
+-    self.layer = _shapeLayer;
+-    self.wantsLayer = YES;
++    _shieldAlpha = 1.0;  // Shield defaults to opaque.
++
++    // On macOS 26+ the shield is a genuine Liquid Glass orb that bends and
++    // tints the page behind it. On older systems, fall back to Chromium's
++    // original dim translucent-black semicircle.
++    if (@available(macOS 26.0, *)) {
++      self.wantsLayer = YES;
++      NSGlassEffectView* glass =
++          [[NSGlassEffectView alloc] initWithFrame:self.bounds];
++      glass.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
++      // A 140pt-wide view with a 70pt corner radius rounds the full width into
++      // the circular shield that hugs the window edge.
++      glass.cornerRadius = kShieldRadius;
++      glass.style = NSGlassEffectViewStyleRegular;
++      [self addSubview:glass];
++      _glassView = glass;
++    } else {
++      _shapeLayer = [[CAShapeLayer alloc] init];
++      self.layer = _shapeLayer;
++      self.wantsLayer = YES;
++    }
+ 
+     // If going backward, the arrow needs to be in the right half of the circle,
+     // so offset the X position.
+@@ -62,8 +82,20 @@ const CGFloat kShieldHeightCompletionAdjust = 10;
+     arrowRect = NSInsetRect(arrowRect, 10, 0);  // Give a little padding.
+ 
+     NSImageView* imageView = [[NSImageView alloc] initWithFrame:arrowRect];
+-    imageView.image = image;
+     imageView.autoresizingMask = NSViewMinYMargin | NSViewMaxYMargin;
++    if (_glassView) {
++      // The glass orb is light and content-adaptive, so the historical
++      // light-on-black arrow would wash out. Tint a template copy of the image
++      // (copied so the shared resource isn't mutated) with the semantic label
++      // color so it reads in both light and dark appearances. The arrow is a
++      // sibling layered above the glass, preserving its exact placement.
++      NSImage* glassArrow = [image copy];
++      [glassArrow setTemplate:YES];
++      imageView.image = glassArrow;
++      imageView.contentTintColor = NSColor.labelColor;
++    } else {
++      imageView.image = image;
++    }
+     [self addSubview:imageView];
+   }
+   return self;
+@@ -73,7 +105,9 @@ const CGFloat kShieldHeightCompletionAdjust = 10;
+   NSSize oldSize = self.frame.size;
+   [super setFrameSize:newSize];
+ 
+-  if (!_shapeLayer.path || !NSEqualSizes(oldSize, newSize)) {
++  // Only the fallback paints an explicit ellipse path; the glass orb derives
++  // its shape from cornerRadius and resizes itself via the autoresizing mask.
++  if (_shapeLayer && (!_shapeLayer.path || !NSEqualSizes(oldSize, newSize))) {
+     base::apple::ScopedCFTypeRef<CGMutablePathRef> oval(CGPathCreateMutable());
+     CGRect ovalRect = CGRectMake(0, 0, newSize.width, newSize.height);
+     CGPathAddEllipseInRect(oval.get(), nullptr, ovalRect);
+@@ -84,9 +118,15 @@ const CGFloat kShieldHeightCompletionAdjust = 10;
+ - (void)setShieldAlpha:(CGFloat)shieldAlpha {
+   if (shieldAlpha != _shieldAlpha) {
+     _shieldAlpha = shieldAlpha;
+-    base::apple::ScopedCFTypeRef<CGColorRef> fillColor(
+-        CGColorCreateGenericGray(0, shieldAlpha));
+-    _shapeLayer.fillColor = fillColor.get();
++    if (_glassView) {
++      // Fade the glass orb in as the gesture progresses, mirroring the dim
++      // shield's original [0.25, 0.75] ramp. The arrow stays fully opaque.
++      _glassView.alphaValue = shieldAlpha;
++    } else {
++      base::apple::ScopedCFTypeRef<CGColorRef> fillColor(
++          CGColorCreateGenericGray(0, shieldAlpha));
++      _shapeLayer.fillColor = fillColor.get();
++    }
+   }
+ }
+ 

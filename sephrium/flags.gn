@@ -1,0 +1,58 @@
+# Sephrium — Chromium release (shippable) build configuration.
+#
+# Used by build_sephrium.sh --release. Trades ~3-5x build time for the
+# shippable framework: is_official_build=true turns on PGO/LTO/etc.; LTO
+# alone is the bulk of the link time.
+#
+# For the inner dev loop see flags_fast.gn — same arg set minus LTO and
+# component_build/dcheck differences. Both files MUST share the toolchain
+# and safe_browsing posture so a fast build and a release build see the
+# same source graph (gn gen / patches assume mode-0 holes everywhere).
+
+# ── ungoogled-chromium baseline (verbatim) ────────────────────────────────
+build_with_tflite_lib = false
+chrome_pgo_phase = 0
+clang_use_chrome_plugins = false
+disable_fieldtrial_testing_config = true
+enable_hangout_services_extension = false
+enable_mdns = false
+enable_remoting = false
+enable_reporting = false
+enable_service_discovery = false
+enable_widevine = true
+exclude_unwind_tables = true
+google_api_key = ""
+google_default_client_id = ""
+google_default_client_secret = ""
+# safe_browsing_mode: 0 = disabled (paired with Sephr patches 004/005 that
+# carve mode-0 holes in the build graph), 1 = full desktop, 2 = Android.
+# We ship with mode 0 — google_api_key is blank so even at mode 1 nothing
+# would reach Google, but mode 0 is leaner and matches the privacy posture.
+safe_browsing_mode = 0
+treat_warnings_as_errors = false
+use_official_google_api_keys = false
+use_unofficial_version_number = false
+
+# ── macOS target ──────────────────────────────────────────────────────────
+target_os = "mac"
+target_cpu = "arm64"
+
+# Tarball build: no hermetic Xcode (mac_toolchain.py was skipped), so use
+# the Xcode/SDK that `xcode-select` points at.
+use_system_xcode = true
+
+# ── Release build posture ─────────────────────────────────────────────────
+is_debug = false
+is_component_build = false
+is_official_build = true
+symbol_level = 0
+
+# Disable dSYM generation. is_official_build flips enable_dsyms on by
+# default (see build/config/apple/symbols.gni), which in turn invokes
+# `dsymutil` from tools/clang/dsymutil/bin/. That binary is part of the
+# hermetic Chromium toolchain we don't fetch — only the lite tarball +
+# clang/rust/objdump downloads. Disabling here lets the release build
+# finish; symbols still come through symbol_level=0 + Crashpad's own
+# extraction. For full dSYM packaging, fetch tools/clang/dsymutil via
+# tools/clang/scripts/update.py --package=dsymutil first.
+enable_dsyms = false

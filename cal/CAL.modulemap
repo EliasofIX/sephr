@@ -1,0 +1,7 @@
+// Copyright (c) Sephr. All rights reserved.
+framework module CAL {
+    umbrella header "CAL.h"
+
+    export *
+    module * { export * }
+}

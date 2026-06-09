@@ -1,0 +1,17 @@
+# Sephr patch series — P0 (reproducibility) baseline.
+#
+# Patches 001 + 007–011 are the deferred privacy series and still need to be
+# rebased to Chromium 147. They live in sephrium/patches/sephr/deferred/ and
+# are NOT in this series. P1 will rebase them and reinstate them here.
+#
+# Order matters: 004/005 carve mode-0 holes that 002's framework targets
+# need; 003 stops a broken disable-ai.patch caller from breaking the link.
+
+002-cal-webcontents-bridge.patch
+003-screen-ai-disable-guard.patch
+004-mode0-build-graph-fixes.patch
+005-prune-test-targets-from-gn-all.patch
+012-cal-browser-main-extra-parts.patch
+013-disable-keychain-prompt-mac.patch
+014-brand-mac-product-names.patch
+015-liquid-glass-history-overlay.patch

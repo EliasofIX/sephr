@@ -1,0 +1,104 @@
+# Sephr — 004-mode0-build-graph-fixes
+#
+# Sephr builds with safe_browsing_mode=0. ungoogled-chromium's
+# fix-building-without-safebrowsing.patch is in the deferred Sephr patch
+# series (not yet rebased to 147). Until it lands, these surgical fixes
+# let `gn gen` succeed at mode 0:
+#
+#   * chrome/browser/safe_browsing/BUILD.gn — wrap the body of the
+#     `safe_browsing` and `metrics_collector` source_sets in `if (false)`
+#     so their (mode-1) sources stop being declared. Targets still exist
+#     as empty stubs so callers can keep linking.
+#
+#   * chrome/common/safe_browsing/BUILD.gn and
+#     components/safe_browsing/content/common/BUILD.gn — flip
+#     `if (safe_browsing_mode != 0)` to `if (true)`. These define offline
+#     file-analysis utilities used by chrome/test targets during whole-graph
+#     `gn gen`. chrome_framework does not actually pull them in at mode 0.
+#
+# All three changes are no-ops at runtime for the framework dylib; they
+# only quiet `gn gen` so the whole-source-tree graph resolves.
+
+--- a/chrome/browser/safe_browsing/BUILD.gn
++++ b/chrome/browser/safe_browsing/BUILD.gn
+@@ -7,6 +7,7 @@
+ import("//extensions/buildflags/buildflags.gni")
+ 
+ static_library("safe_browsing") {
++  if (false) {
+   sources = [
+     "chrome_controller_client.cc",
+     "chrome_controller_client.h",
+@@ -88,10 +89,8 @@
+     "//services/metrics/public/cpp:ukm_builders",
+     "//services/preferences/public/cpp",
+   ]
+-
+-  if (enable_extensions) {
+-    deps += [ "//chrome/browser/ui/web_applications" ]
+-  }
++  }
++
+ 
+   # Note: is_android is not equivalent to safe_browsing_mode == 2.
+   # Sources and dependencies added to this block must not depend on anything
+@@ -111,17 +110,6 @@
+     allow_circular_includes_from += [ "//chrome/browser/ash/file_manager" ]
+   }
+ 
+-  if (is_win || is_mac || is_linux || is_chromeos) {
+-    sources += [
+-      "security_settings_bundle_toast_helper.cc",
+-      "security_settings_bundle_toast_helper.h",
+-    ]
+-    deps += [
+-      "//chrome/browser/ui/browser_window",
+-      "//chrome/browser/ui/toasts",
+-      "//chrome/browser/ui/toasts/api:toasts",
+-    ]
+-  }
+ 
+   if (safe_browsing_mode != 0) {
+     # "Safe Browsing Basic" files used for safe browsing in full mode
+@@ -633,6 +621,7 @@
+ }
+ 
+ source_set("metrics_collector") {
++  if (false) {
+   sources = [
+     "safe_browsing_metrics_collector_factory.cc",
+     "safe_browsing_metrics_collector_factory.h",
+@@ -652,6 +641,7 @@
+     "//components/safe_browsing/core/common:safe_browsing_prefs",
+     "//content/public/browser",
+   ]
++  }
+ }
+ 
+ source_set("unit_tests") {
+--- a/chrome/common/safe_browsing/BUILD.gn
++++ b/chrome/common/safe_browsing/BUILD.gn
+@@ -7,7 +7,11 @@
+ 
+ assert(!is_fuchsia, "Fuchsia shouldn't use anything in //chrome")
+ 
+-if (safe_browsing_mode != 0) {
++# Sephr: define these offline file-analysis utilities even at safe_browsing_mode
++# == 0 so the (never-built) chrome/test targets resolve during whole-graph
++# `gn gen`. chrome_framework at mode 0 doesn't depend on them, so they are not
++# compiled into the framework.
++if (true) {  # was: if (safe_browsing_mode != 0)
+   source_set("archive_analyzer_results") {
+     sources = [
+       "archive_analyzer_results.cc",
+--- a/components/safe_browsing/content/common/BUILD.gn
++++ b/components/safe_browsing/content/common/BUILD.gn
+@@ -22,7 +22,7 @@
+   }
+ }
+ 
+-if (safe_browsing_mode != 0) {
++if (true) {  # Sephr: define file_type_policies at mode 0 so test deps resolve
+   source_set("file_type_policies") {
+     sources = [
+       "file_type_policies.cc",

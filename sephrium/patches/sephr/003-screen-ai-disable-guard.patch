@@ -1,0 +1,40 @@
+# Sephr — 003-screen-ai-disable-guard
+#
+# ungoogled-chromium's disable-ai.patch drops the chrome/browser/screen_ai
+# target group (no screen_ai_install_state, no screen_ai_service_router).
+# But chrome/browser/chrome_content_browser_client.cc still calls
+# screen_ai::ScreenAIInstallState::GetInstance() inside the kScreenAI
+# sandbox spawn branch — an unresolved symbol in the final framework link.
+#
+# Replace the body with a VLOG + early return. The kScreenAI sandbox type
+# is never actually spawned at runtime because the component path is empty
+# (its installer target was dropped), so this branch is unreachable except
+# defensively.
+
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -8102,18 +8102,12 @@
+     return true;
+   }
+   if (sandbox_type == sandbox::mojom::Sandbox::kScreenAI) {
+-    // ScreenAI service needs read access to ScreenAI component binary path to
+-    // load it.
+-    base::FilePath screen_ai_binary_path =
+-        screen_ai::ScreenAIInstallState::GetInstance()
+-            ->get_component_binary_path();
+-    if (screen_ai_binary_path.empty()) {
+-      VLOG(1) << "Screen AI component not found.";
+-      return false;
+-    }
+-    return serializer->SetParameter(
+-        sandbox::policy::kParamScreenAiComponentPath,
+-        screen_ai_binary_path.value());
++    // Sephr: ScreenAI is disabled (ungoogled disable-ai.patch dropped the
++    // screen_ai_install_state target), so the component is never available and
++    // this sandbox type is never actually spawned. Avoid referencing the
++    // unlinked ScreenAIInstallState::GetInstance().
++    VLOG(1) << "Screen AI component not found (disabled).";
++    return false;
+   }
+   if (sandbox_type == sandbox::mojom::Sandbox::kOnDeviceTranslation) {
+     auto translatekit_binary_path =

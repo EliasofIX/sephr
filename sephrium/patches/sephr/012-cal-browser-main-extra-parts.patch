@@ -1,0 +1,125 @@
+# Sephr — 012-cal-browser-main-extra-parts
+#
+# CAL Phase 2 — boot the embedded Chromium for real. SephriumInitialize
+# becomes a thin forwarder to ChromeMain; Chromium owns the run loop. The
+# Sephr Swift code that used to set up NSApp / windows after the Phase-1
+# CAL bootstrap now runs from PostBrowserStart, by which point
+# g_browser_process and the initial profile are ready.
+#
+# New surface:
+#   chrome/browser/sephr_browser_main_extra_parts.{h,cc} — ExtraParts
+#     subclass that fires a stored UiBootCallback in PostBrowserStart.
+#   SephriumSetUiBootCallback(cb) — new C ABI entry to register the
+#     embedder's UI bring-up before SephriumInitialize.
+#   SephriumInitialize — now forwards to ChromeMain and never returns.
+#
+# Diagnostic logging is kept at LOG(WARNING) (visible in stderr when the
+# host passes --enable-logging=stderr) — useful for verifying the wiring
+# from outside the framework. CAL injects --enable-logging=stderr by
+# default in browser-mode argv.
+
+--- /dev/null
++++ b/chrome/browser/sephr_browser_main_extra_parts.h
+@@ -0,0 +1,58 @@
++// Copyright (c) Sephr. All rights reserved.
++// Proprietary — not for redistribution.
++//
++// SephrBrowserMainExtraParts — the hook that bridges Chromium's main run
++// loop to Sephr's Swift/AppKit UI bring-up.
++//
++// CAL Phase 2: SephriumInitialize() forwards into ChromeMain, which never
++// returns. Chromium owns the NSApplication run loop. The Sephr Swift code
++// that *used* to live after CALEngineBootstrap.initialize() (NSApp setup,
++// window creation, AppDelegate install, etc.) now runs from PostBrowserStart
++// — by which point g_browser_process + ProfileManager are ready, so
++// SephriumWebContentsCreate() returns a real WebContents.
++//
++// Wiring:
++//   1. Embedder calls SephriumSetUiBootCallback(cb) BEFORE SephriumInitialize.
++//      (cal_bridge.mm stores the C function pointer in this header's
++//      registry.)
++//   2. SephriumInitialize -> ChromeMain.
++//   3. ChromeBrowserMainParts::AddParts() in chrome_browser_main.cc
++//      attaches an SephrBrowserMainExtraParts.
++//   4. Its PostBrowserStart() fires the stored callback.
++
++#ifndef CHROME_BROWSER_SEPHR_BROWSER_MAIN_EXTRA_PARTS_H_
++#define CHROME_BROWSER_SEPHR_BROWSER_MAIN_EXTRA_PARTS_H_
++
++#include "chrome/browser/chrome_browser_main_extra_parts.h"
++
++namespace sephr {
++
++// C function pointer signature — must match the typedef in cal_bridge.h
++// (we deliberately don't pull cal_bridge.h here to keep this header in
++// chrome/browser and avoid circular include paths).
++using UiBootCallback = void (*)(void);
++
++// Stores the callback that SephrBrowserMainExtraParts::PostBrowserStart()
++// will invoke. Thread-safe to call before ChromeMain (writes happen on
++// the embedder's main thread before threads are created). NULL clears.
++void SetUiBootCallback(UiBootCallback callback);
++
++}  // namespace sephr
++
++class SephrBrowserMainExtraParts : public ChromeBrowserMainExtraParts {
++ public:
++  SephrBrowserMainExtraParts();
++  ~SephrBrowserMainExtraParts() override;
++
++  SephrBrowserMainExtraParts(const SephrBrowserMainExtraParts&) = delete;
++  SephrBrowserMainExtraParts& operator=(const SephrBrowserMainExtraParts&) =
++      delete;
++
++  // ChromeBrowserMainExtraParts:
++  // Fires the registered UiBootCallback. By PostBrowserStart, the browser
++  // process is initialized, profile manager is up, and the initial profile
++  // has been loaded — embedders can safely create WebContents.
++  void PostBrowserStart() override;
++};
++
++#endif  // CHROME_BROWSER_SEPHR_BROWSER_MAIN_EXTRA_PARTS_H_
+--- /dev/null
++++ b/chrome/browser/sephr_browser_main_extra_parts.cc
+@@ -0,0 +1,41 @@
++// Copyright (c) Sephr. All rights reserved.
++// Proprietary — not for redistribution.
++
++#include "chrome/browser/sephr_browser_main_extra_parts.h"
++
++#include "base/logging.h"
++
++namespace sephr {
++namespace {
++
++// Storage for the UI-boot callback. Set by SetUiBootCallback (called from
++// cal_bridge.mm's SephriumSetUiBootCallback), read once on the UI thread in
++// SephrBrowserMainExtraParts::PostBrowserStart. Single-threaded for our
++// purposes — set before ChromeMain spins up threads.
++UiBootCallback g_ui_boot_callback = nullptr;
++
++}  // namespace
++
++void SetUiBootCallback(UiBootCallback callback) {
++  VLOG(1) << "[sephr/extraparts] SetUiBootCallback("
++          << (callback ? "non-null" : "null") << ")";
++  g_ui_boot_callback = callback;
++}
++
++}  // namespace sephr
++
++SephrBrowserMainExtraParts::SephrBrowserMainExtraParts() {
++  VLOG(1) << "[sephr/extraparts] ctor";
++}
++SephrBrowserMainExtraParts::~SephrBrowserMainExtraParts() = default;
++
++void SephrBrowserMainExtraParts::PostBrowserStart() {
++  if (!sephr::g_ui_boot_callback) {
++    LOG(WARNING) << "[sephr/extraparts] PostBrowserStart — no UI-boot "
++                    "callback registered; running headless.";
++    return;
++  }
++  VLOG(1) << "[sephr/extraparts] PostBrowserStart — firing UI callback.";
++  sephr::g_ui_boot_callback();
++  VLOG(1) << "[sephr/extraparts] UI callback returned.";
++}

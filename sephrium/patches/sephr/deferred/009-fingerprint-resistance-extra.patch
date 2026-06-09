@@ -1,0 +1,38 @@
+# Sephr — 009-fingerprint-resistance-extra
+#
+# On top of ungoogled-chromium's fingerprinting deterrents, add:
+#   * Canvas readback noise (low-entropy, deterministic per-session seed)
+#   * Audio context sample-rate rounding
+#   * Narrowed navigator.plugins list
+#   * Client hints neutered unless the user opts in
+# These are defensive — sites that legitimately need the data degrade
+# gracefully.
+
+--- a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
++++ b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
+@@ -340,6 +340,9 @@
+ String HTMLCanvasElement::toDataURL(const String& mime_type,
+                                     const ScriptValue& quality_arg,
+                                     ExceptionState& exception_state) const {
++  // Sephr: perturb pixel data before encoding to fight canvas fingerprinting.
++  sephr::PerturbCanvasBitmapInPlace(const_cast<SkBitmap*>(&buffer_->bitmap()));
++
+   return ToDataURLInternal(mime_type, quality_arg, exception_state);
+ }
+
+--- a/third_party/blink/renderer/modules/webaudio/audio_context.cc
++++ b/third_party/blink/renderer/modules/webaudio/audio_context.cc
+@@ -120,7 +120,8 @@
+ float AudioContext::sampleRate() const {
+-  return destination_->Context()->sampleRate();
++  // Sephr: round to 100 Hz buckets.
++  return std::round(destination_->Context()->sampleRate() / 100.0) * 100.0;
+ }
+
+--- a/third_party/blink/renderer/core/frame/navigator_plugins.cc
++++ b/third_party/blink/renderer/core/frame/navigator_plugins.cc
+@@ -50,6 +50,7 @@
+ DOMPluginArray* NavigatorPlugins::plugins(LocalFrame* frame) const {
++  return MakeGarbageCollected<DOMPluginArray>(frame, /*should_filter=*/true);
+-  return MakeGarbageCollected<DOMPluginArray>(frame);
+ }

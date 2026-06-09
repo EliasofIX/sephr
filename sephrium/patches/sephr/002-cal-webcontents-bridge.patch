@@ -1,0 +1,58 @@
+# Sephr — 002-cal-webcontents-bridge (slim overlay version)
+#
+# Wires Sephr's CAL bridge into the chrome_dll link. The bridge sources
+# THEMSELVES live in this repo under sephr_overlay/cal_bridge/ and are
+# symlinked into the Chromium tree at //sephr/cal_bridge by bootstrap.sh —
+# they do NOT live in this patch.
+#
+# Real upstream touchpoints (the ONLY thing 3-way merge has to rebase on
+# every Chromium bump):
+#   * chrome/BUILD.gn  — one line, add //sephr/cal_bridge to chrome_dll deps.
+#   * chrome/app/framework.exports — the _Sephrium* exports list.
+#
+# Both anchor on stable structural landmarks (the deps = [ block of
+# chrome_dll, and the end of the chrome-framework export list) so they
+# survive Chromium reshuffles via git's 3-way merge engine.
+
+--- a/chrome/app/framework.exports
++++ b/chrome/app/framework.exports
+@@ -44,4 +47,29 @@
+ _SephriumWebContentsCopyTitle
+ _SephriumWebContentsSetNavCallback
+ _SephriumWebContentsCaptureSnapshot
++# ---- Sephr CAL bridge -----------------------------------------------------
++_SephriumInitialize
++_SephriumPumpOnce
++_SephriumSetUiBootCallback
++_SephriumProfileGet
++_SephriumProfileRelease
++_SephriumWebContentsCreate
++_SephriumWebContentsDestroy
++_SephriumWebContentsGetNativeView
++_SephriumWebContentsLoadURL
++_SephriumWebContentsGoBack
++_SephriumWebContentsGoForward
++_SephriumWebContentsReload
++_SephriumWebContentsStop
++_SephriumWebContentsSetSize
++_SephriumWebContentsFocus
++_SephriumWebContentsSetFrozen
++_SephriumHistoryQuery
++_SephriumHistoryDeleteURL
++_SephriumHistoryClearAll
++_SephriumDownloadsSubscribe
++_SephriumDownloadPause
++_SephriumDownloadResume
++_SephriumDownloadCancel
++_SephriumOmniboxQuery
+ _SephriumStringFree
+--- a/chrome/BUILD.gn
++++ b/chrome/BUILD.gn
+@@ -1120,6 +1120,7 @@
+
+     deps = [
+       ":dependencies",
++      "//sephr/cal_bridge",
+       "//build:chromeos_buildflags",
+       "//chrome/app:command_ids",
+       "//chrome/common:buildflags",

@@ -1,0 +1,20 @@
+MISSION: Take Sephr from "Sephrium.framework builds + C-ABI link proven" to a production-ready, shippable macOS browser. Work autonomously, phase by phase. Verify every milestone with hard evidence (run it, read the output) before advancing — never claim a phase done on assertion alone.
+
+STATE (2026-06-03): Chromium 147.0.7727.101 builds from the ungoogled lite tarball into build/Sephrium.framework (363MB, 20 _Sephrium* exports, gate passes). CAL (ObjC++) + sephr-smoke link and launch, but the window is BLANK: SephriumInitialize is a no-op, so Chromium is loaded yet never booted (0 child procs, ~5 threads, 59MB RSS). CRITICAL: ~15 fixes live only in the working tree, NOT in the patches — the build is currently NOT reproducible from a clean checkout. Read first: memory sephr-first-build.md + project_cal_phase1.md; sephrium/PHASE2-PLAN.md.
+
+GROUND RULES:
+- Inner loop: scripts/build_sephrium.sh --fast. Ship: --release (is_official_build+LTO). Full build ~1.5h, incremental is cheap — always compile cal_bridge.o first to catch bridge errors before the 38k-step link.
+- After any Chromium-side change: rebuild, then re-run the gate (cal_bridge.h present + nm -gU shows >=20 _Sephrium* exports).
+- Keep the tree buildable: safe_browsing_mode=0, use_system_xcode=true, no enable_nacl. Lite tarball ships Linux binaries — mac gn/esbuild/llvm-objdump(.tar.xz)/node and third_party/google_toolbox_for_mac/src must be fetched (exact sources in memory).
+- Commit/backport as you go; do not pile new work on an unreproducible base. Stop to ask the user only on irreversible or product/UX decisions; otherwise keep going.
+
+PHASES (in order; each has an EXIT test):
+P0 REPRODUCIBILITY (do first): fold every working-tree fix into sephrium/patches + flags + a tarball bootstrap flow. Fix patch 002 (wrong @@ hunk counts truncate all 4 files; cal_bridge must be .mm; CopyFromSurface timeout; add the missing framework.exports + chrome/BUILD.gn cal_bridge wiring). EXIT: `rm -rf .chromium-src` then a fresh bootstrap + build_sephrium.sh --fast passes the gate with ZERO manual edits.
+P1 PRIVACY: rebase the 6 deferred patches (001,007-011) to 147. EXIT: all apply clean, framework still builds + gate passes.
+P2 BOOT CHROMIUM (the big one): implement PHASE2-PLAN Option A — SephriumInitialize calls ChromeMain; add SephrBrowserMainExtraParts to fire a UI bring-up callback once g_browser_process/ProfileManager exist. EXIT: `sephr-smoke --url https://example.com` PAINTS the page, prints "Nav: …/Example Domain", onNavigation fires, real WebContents exists (RSS hundreds of MB, helper processes spawn). This is the first real test of the other 18 bridge functions.
+P3 FULL APP: fix the Swift drift listed in PHASE2-PLAN (stale CAL calls) so `swift build` Sephr compiles; move AppDelegate/Sparkle setup into the ExtraParts callback. EXIT: Sephr.app launches; sidebar/tabs/spaces work; a real tab renders a live site.
+P4 BRIDGE SURFACE: implement the Phase-1 stubs as real C ABI + exports — TabStrip, Omnibox/Autocomplete, Media, Downloads, History, Extensions. EXIT: each surface drives a real Chromium primitive end-to-end (navigation, suggestions, media controls, download list, history query, extension load).
+P5 SHIP: --release build; Developer ID sign + notarize; Sparkle auto-update channel; crash reporting; persistent profile/disk; performance + memory pass. EXIT: a signed, notarized Sephr.app installs and auto-updates on a clean Mac and renders a matrix of top sites without crashing.
+P6 QA: leak/crash/security review + a regression suite covering nav, tabs, downloads, restore. EXIT: green.
+
+DONE = a signed, notarized, auto-updating Sephr.app that browses the real web, built reproducibly from a clean checkout via one command. Keep memory + PHASE2-PLAN updated as each phase lands; record new gotchas so future runs don't repay them.

@@ -1,0 +1,166 @@
+import AppKit
+
+/// Traffic lights (system-placed) + back/forward/reload + an inline URL bar
+/// that takes keyboard input directly on the main window (no separate
+/// panel). Cmd-T still opens the floating command palette as a richer
+/// search interface, but the inline bar guarantees the user always has a
+/// typable URL input even if focus routing for the panel is finicky.
+final class SephrTitlebarView: NSView, NSTextFieldDelegate {
+
+    private let backButton = SephrTitlebarButton(symbol: "chevron.backward")
+    private let forwardButton = SephrTitlebarButton(symbol: "chevron.forward")
+    private let reloadButton = SephrTitlebarButton(symbol: "arrow.clockwise")
+    private let urlField: NSTextField = {
+        let f = NSTextField()
+        f.placeholderString = "Search or enter URL — Enter to navigate"
+        f.font = .systemFont(ofSize: 13)
+        f.alignment = .center
+        f.isBordered = false
+        f.drawsBackground = true
+        f.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.65)
+        f.focusRingType = .none
+        f.lineBreakMode = .byTruncatingHead
+        f.wantsLayer = true
+        f.layer?.cornerRadius = 8
+        f.layer?.masksToBounds = true
+        return f
+    }()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+
+        backButton.translatesAutoresizingMaskIntoConstraints = false
+        forwardButton.translatesAutoresizingMaskIntoConstraints = false
+        reloadButton.translatesAutoresizingMaskIntoConstraints = false
+        urlField.translatesAutoresizingMaskIntoConstraints = false
+
+        backButton.target = self; backButton.action = #selector(goBack)
+        forwardButton.target = self; forwardButton.action = #selector(goForward)
+        reloadButton.target = self; reloadButton.action = #selector(reload)
+        urlField.target = self
+        urlField.action = #selector(urlFieldSubmitted)
+        urlField.delegate = self
+
+        [backButton, forwardButton, reloadButton, urlField].forEach { addSubview($0) }
+
+        NSLayoutConstraint.activate([
+            backButton.leadingAnchor.constraint(
+                equalTo: leadingAnchor, constant: 84),
+            backButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            backButton.widthAnchor.constraint(equalToConstant: 28),
+            backButton.heightAnchor.constraint(equalToConstant: 28),
+
+            forwardButton.leadingAnchor.constraint(
+                equalTo: backButton.trailingAnchor, constant: 4),
+            forwardButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            forwardButton.widthAnchor.constraint(equalToConstant: 28),
+            forwardButton.heightAnchor.constraint(equalToConstant: 28),
+
+            reloadButton.leadingAnchor.constraint(
+                equalTo: forwardButton.trailingAnchor, constant: 4),
+            reloadButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            reloadButton.widthAnchor.constraint(equalToConstant: 28),
+            reloadButton.heightAnchor.constraint(equalToConstant: 28),
+
+            urlField.leadingAnchor.constraint(
+                equalTo: reloadButton.trailingAnchor, constant: 12),
+            urlField.trailingAnchor.constraint(
+                equalTo: trailingAnchor, constant: -16),
+            urlField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            urlField.heightAnchor.constraint(equalToConstant: 30),
+        ])
+
+        // Keep the URL field synced to the active tab's URL so it shows
+        // what the user is currently viewing, but only when the field
+        // isn't being edited (don't stomp their in-progress typing).
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(syncURL),
+            name: .sephrTabModelChanged, object: nil)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    // Allow the title bar surface to be dragged everywhere EXCEPT where
+    // the URL field lives — otherwise the URL field can't receive clicks
+    // because AppKit interprets them as window drags.
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if !urlField.frame.contains(p),
+           !backButton.frame.contains(p),
+           !forwardButton.frame.contains(p),
+           !reloadButton.frame.contains(p) {
+            window?.performDrag(with: event)
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
+
+    @objc private func syncURL() {
+        guard window?.firstResponder != urlField.currentEditor() else { return }
+        let cur = SephrTabModel.shared.activeTab()?.url ?? ""
+        if urlField.stringValue != cur {
+            urlField.stringValue = cur
+        }
+    }
+
+    @objc private func urlFieldSubmitted() {
+        let s = urlField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty else { return }
+        let resolved = Self.resolveAsURL(s)
+            ?? "https://duckduckgo.com/?q=\(s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
+        let space = SephrSpaceManager.shared.currentSpace
+        if let active = SephrTabModel.shared.activeTab(),
+           active.spaceID == space.id {
+            active.webView?.loadURL(resolved)
+            active.url = resolved
+        } else {
+            _ = SephrTabModel.shared.newTab(in: space, url: resolved)
+        }
+    }
+
+    private static func resolveAsURL(_ s: String) -> String? {
+        if s.contains(" ") { return nil }
+        if s.hasPrefix("sephr://") || s.hasPrefix("file://") { return s }
+        if s.hasPrefix("http://") || s.hasPrefix("https://") { return s }
+        if s.hasPrefix("localhost") || s.contains(".") {
+            return "https://" + s
+        }
+        return nil
+    }
+
+    @objc private func goBack()    { SephrTabModel.shared.activeTab()?.webView?.goBack() }
+    @objc private func goForward() { SephrTabModel.shared.activeTab()?.webView?.goForward() }
+    @objc private func reload()    { SephrTabModel.shared.activeTab()?.webView?.reload() }
+}
+
+final class SephrTitlebarButton: NSButton {
+    init(symbol: String) {
+        super.init(frame: .zero)
+        isBordered = false
+        bezelStyle = .regularSquare
+        imagePosition = .imageOnly
+        if #available(macOS 11, *) {
+            image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            symbolConfiguration = .init(pointSize: 13, weight: .medium)
+        }
+        contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func mouseEntered(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+    }
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = .clear
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow],
+            owner: self, userInfo: nil))
+    }
+}

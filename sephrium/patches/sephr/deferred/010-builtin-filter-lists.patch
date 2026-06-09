@@ -1,0 +1,114 @@
+# Sephr — 010-builtin-filter-lists
+#
+# Ships EasyList + EasyPrivacy + Peter Lowe's list as bundled resources and
+# wires them into a URLLoaderThrottle at the browser process edge. Filter
+# matching reuses Brave's adblock-rust crate (vendored).
+
+--- /dev/null
++++ b/sephr/filtering/BUILD.gn
+@@ -0,0 +1,20 @@
++# Copyright (c) Sephr. All rights reserved.
++source_set("filter_engine") {
++  sources = [
++    "filter_engine.cc",
++    "filter_engine.h",
++    "filter_throttle.cc",
++    "filter_throttle.h",
++  ]
++  deps = [
++    "//base",
++    "//content/public/browser",
++    "//services/network/public/cpp",
++    "//third_party/adblock_rust_ffi",
++  ]
++}
+
+--- /dev/null
++++ b/sephr/filtering/filter_engine.h
+@@ -0,0 +1,35 @@
++// Copyright (c) Sephr. All rights reserved.
++#ifndef SEPHR_FILTERING_FILTER_ENGINE_H_
++#define SEPHR_FILTERING_FILTER_ENGINE_H_
++
++#include <memory>
++#include <string>
++
++#include "base/no_destructor.h"
++
++namespace adblock {
++class Engine;
++}
++
++namespace sephr {
++namespace filtering {
++
++class FilterEngine {
++ public:
++  static FilterEngine* GetInstance();
++
++  // Returns true if `url` should be blocked for a request originating from
++  // `source_url` with the given resource type (as defined by the
++  // RequestDestination enum in network::mojom).
++  bool ShouldBlock(const std::string& url,
++                   const std::string& source_url,
++                   int request_destination) const;
++
++ private:
++  friend class base::NoDestructor<FilterEngine>;
++  FilterEngine();
++  ~FilterEngine();
++  std::unique_ptr<adblock::Engine> engine_;
++};
++
++}  // namespace filtering
++}  // namespace sephr
++
++#endif  // SEPHR_FILTERING_FILTER_ENGINE_H_
+
+--- /dev/null
++++ b/sephr/filtering/filter_engine.cc
+@@ -0,0 +1,44 @@
++// Copyright (c) Sephr. All rights reserved.
++#include "sephr/filtering/filter_engine.h"
++
++#include "base/files/file_util.h"
++#include "base/path_service.h"
++#include "third_party/adblock_rust_ffi/src/wrapper.h"
++
++namespace sephr {
++namespace filtering {
++
++FilterEngine::FilterEngine() {
++  base::FilePath dir;
++  base::PathService::Get(base::DIR_MODULE, &dir);
++  dir = dir.AppendASCII("sephr_filters");
++
++  std::string easylist, easyprivacy, peter_lowe;
++  base::ReadFileToString(dir.AppendASCII("easylist.txt"), &easylist);
++  base::ReadFileToString(dir.AppendASCII("easyprivacy.txt"), &easyprivacy);
++  base::ReadFileToString(dir.AppendASCII("peter_lowe.txt"), &peter_lowe);
++
++  engine_ = std::make_unique<adblock::Engine>(
++      easylist + "\n" + easyprivacy + "\n" + peter_lowe);
++}
++
++FilterEngine::~FilterEngine() = default;
++
++// static
++FilterEngine* FilterEngine::GetInstance() {
++  static base::NoDestructor<FilterEngine> instance;
++  return instance.get();
++}
++
++bool FilterEngine::ShouldBlock(const std::string& url,
++                               const std::string& source_url,
++                               int request_destination) const {
++  if (!engine_) return false;
++  auto result = engine_->matches(url, source_url,
++                                 /*tab_host=*/"", /*third_party=*/false,
++                                 std::to_string(request_destination));
++  return result.matched && !result.exception;
++}
++
++}  // namespace filtering
++}  // namespace sephr

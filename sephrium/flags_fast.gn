@@ -1,0 +1,50 @@
+# Sephrium — fast inner-loop build configuration.
+#
+# This is the dev-loop variant of flags.gn. It trades release-grade output
+# for ~3-5x faster initial builds and dramatically faster incremental builds.
+# Use flags.gn (is_official_build=true + LTO) for shippable framework builds.
+#
+# Notable differences from flags.gn:
+#   - is_official_build = false → skips PGO/LTO setup costs.
+#   - use_thin_lto = false      → biggest single win on link time.
+#   - blink_symbol_level = 0    → cuts Blink compile time noticeably.
+#   - enable_nacl = false       → drops NaCl from the dep graph entirely.
+#   - dcheck_always_on = false  → release semantics.
+
+# ── ungoogled-chromium baseline (verbatim) ────────────────────────────────
+build_with_tflite_lib = false
+chrome_pgo_phase = 0
+clang_use_chrome_plugins = false
+disable_fieldtrial_testing_config = true
+enable_hangout_services_extension = false
+enable_mdns = false
+enable_remoting = false
+enable_reporting = false
+enable_service_discovery = false
+enable_widevine = true
+exclude_unwind_tables = true
+google_api_key = ""
+google_default_client_id = ""
+google_default_client_secret = ""
+safe_browsing_mode = 0
+treat_warnings_as_errors = false
+use_official_google_api_keys = false
+use_unofficial_version_number = false
+
+# ── macOS target ──────────────────────────────────────────────────────────
+target_os = "mac"
+target_cpu = "arm64"
+
+# Tarball build: no hermetic Xcode was fetched (mac_toolchain.py was skipped),
+# so use the system Xcode/SDK selected by `xcode-select`.
+use_system_xcode = true
+
+# ── Fast inner-loop posture ───────────────────────────────────────────────
+is_debug = false
+is_component_build = false
+is_official_build = false
+use_thin_lto = false
+symbol_level = 0
+blink_symbol_level = 0
+enable_nacl = false
+dcheck_always_on = false

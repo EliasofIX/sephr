@@ -1,0 +1,47 @@
+# Copyright (c) Sephr. All rights reserved.
+# Proprietary — not for redistribution.
+
+source_set("cal_bridge") {
+  sources = [
+    "cal_bridge.mm",
+    "cal_bridge.h",
+    "cal_downloads_bridge.cc",
+    "cal_extensions_bridge.cc",
+    "cal_history_bridge.cc",
+    "cal_omnibox_bridge.cc",
+    "cal_profile_registry.cc",
+    "cal_profile_registry.h",
+    "cal_tab_window_controller.cc",
+    "cal_tab_window_controller.h",
+    "sephr_modal_dialog_host.cc",
+    "sephr_modal_dialog_host.h",
+    "sephr_modal_dialog_manager_delegate.cc",
+    "sephr_modal_dialog_manager_delegate.h",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome/browser",
+    "//chrome/browser/autocomplete",
+    "//chrome/browser/history",
+    "//chrome/browser/profiles:profile",
+    "//components/download/public/common:public",
+    "//components/history/core/browser",
+    "//components/omnibox/browser",
+    "//components/viz/common",
+    "//components/web_modal",
+    "//content/public/browser",
+    "//extensions/browser",
+    "//extensions/common",
+    "//content/public/app",
+    "//skia",
+    "//third_party/metrics_proto",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//url",
+  ]
+
+  configs += [ "//build/config/compiler:wexit_time_destructors" ]
+
+  visibility = [ "//chrome:*" ]
+}

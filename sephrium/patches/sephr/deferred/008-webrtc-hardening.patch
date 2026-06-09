@@ -1,0 +1,30 @@
+# Sephr — 008-webrtc-hardening
+#
+# Forces mDNS-obfuscated ICE candidates and disables the non-proxied UDP path
+# by default. Users on video calls aren't penalized (they can flip a
+# Setting), but casual sites can no longer probe local IPs via WebRTC.
+
+--- a/chrome/browser/media/webrtc/webrtc_ip_handling_policy.cc
++++ b/chrome/browser/media/webrtc/webrtc_ip_handling_policy.cc
+@@ -14,7 +14,8 @@
+ namespace webrtc {
+
+ const char* GetDefaultIPHandlingPolicy() {
+-  return kDefault;
++  // Sephr: default to mDNS obfuscation to prevent LAN IP leakage.
++  return kDefaultPublicInterfaceOnly;
+ }
+
+ }  // namespace webrtc
+
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
+@@ -230,6 +230,10 @@
+ void RTCPeerConnection::Init(ExecutionContext* context,
+                              const RTCConfiguration& config) {
++  // Sephr: never enumerate non-proxied UDP candidates by default.
++  config_.enable_dtls_srtp = true;
++  config_.enable_non_proxied_udp = false;
++
+   // ... rest of init ...
+ }

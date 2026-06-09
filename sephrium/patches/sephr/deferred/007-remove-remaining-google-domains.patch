@@ -1,0 +1,36 @@
+# Sephr — 007-remove-remaining-google-domains
+#
+# ungoogled-chromium strips most Google domain references; this patch closes
+# the gaps we've observed in practice — specifically the translate-api
+# referrer, the experiment variations server fallback, and the component
+# updater's last-resort URL.
+
+--- a/chrome/browser/translate/translate_service.cc
++++ b/chrome/browser/translate/translate_service.cc
+@@ -18,7 +18,7 @@
+ namespace {
+
+-constexpr char kTranslateAPIReferrer[] = "https://translate.googleapis.com/";
++constexpr char kTranslateAPIReferrer[] = "about:blank";
+
+ }  // namespace
+
+--- a/components/variations/variations_url_constants.cc
++++ b/components/variations/variations_url_constants.cc
+@@ -6,9 +6,9 @@
+ namespace variations {
+
+-const char kDefaultServerUrl[] = "https://clientservices.googleapis.com/";
+-const char kDefaultInsecureServerUrl[] = "http://clientservices.googleapis.com/";
++const char kDefaultServerUrl[] = "about:blank";
++const char kDefaultInsecureServerUrl[] = "about:blank";
+
+ }  // namespace variations
+
+--- a/components/component_updater/configurator_impl.cc
++++ b/components/component_updater/configurator_impl.cc
+@@ -40,7 +40,7 @@
+ std::vector<GURL> ConfiguratorImpl::UpdateUrl() const {
+-  return { GURL("https://update.googleapis.com/service/update2") };
++  return {};  // Sephr: no Google component updater
+ }

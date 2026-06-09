@@ -1,0 +1,78 @@
+# Sephr — 014-brand-mac-product-names
+#
+# Rebrand Chromium's mac product strings so Activity Monitor (and every
+# other process-name surface — `ps`, Console, the Dock, the "App is
+# launching" banners) shows "Sephr" instead of "Chromium".
+#
+# These values live in chrome/app/theme/chromium/BRANDING and are
+# consumed at build time by chrome/common/chrome_constants.cc, the
+# chrome_framework / chrome_helper / chrome_helper_app GN templates,
+# and the BUNDLE_ID / mac packaging glue. Changing them here means the
+# build produces:
+#
+#   Sephr Framework.framework/                (was Chromium Framework)
+#     Versions/<v>/Sephr Framework            (the inner dylib)
+#     Helpers/
+#       Sephr Helper.app                      (default renderer/utility host)
+#       Sephr Helper (Renderer).app
+#       Sephr Helper (GPU).app
+#       Sephr Helper (Plugin).app
+#       Sephr Helper (Alerts).app
+#
+# chrome/app/chrome_exe_main_mac.cc builds the framework dlopen path as
+# `PRODUCT_FULLNAME_STRING " Framework"`, so the helpers will naturally
+# look for "Sephr Framework" — no further patches needed there.
+#
+# Why not also rename the helpers' embedded executables (Chromium Helper
+# binary inside Chromium Helper.app/Contents/MacOS/)? That's already a
+# function of PRODUCT_FULLNAME via chrome/app/chrome_helper_main_mac.gn,
+# so it falls out for free.
+#
+# COMPANY_FULLNAME / COMPANY_SHORTNAME = "Digital Caviar" matches the
+# org's design language (DIGITAL CAVIAR). MAC_BUNDLE_ID is the helper /
+# framework prefix; the host app's bundle id stays com.sephr.app and is
+# set independently in sephr/Resources/Info.plist.
+#
+# MAC_TEAM_ID is consumed by chrome/browser/webauthn/
+# chrome_web_authentication_delegate.cc to construct the platform
+# authenticator's keychain access group at compile time:
+#
+#     constexpr char kKeychainAccessGroup[] =
+#         MAC_TEAM_IDENTIFIER_STRING "." MAC_BUNDLE_IDENTIFIER_STRING
+#         ".webauthn";
+#
+# That resolves to "U2UY24TMGG.com.sephr.framework.webauthn" with the
+# values below. The Sephr host app must be signed with the matching
+# Developer ID (team U2UY24TMGG) and ship a keychain-access-groups
+# entitlement containing that exact string — see
+# sephr/Resources/Sephr.entitlements. Without the matching prefix,
+# macOS rejects the access-group claim and TouchIdContext::
+# TouchIdAvailableImpl falls through to return false (no platform
+# authenticator offered, no crash). With everything matched up, Apple
+# Keychain / Touch ID becomes a usable WebAuthn authenticator inside
+# Sephr — at which point WebAuthenticationICloudKeychain and
+# WebAuthenticationLocalCredentialManagement should be REMOVED from
+# the --disable-features= switch in cal/Sources/CALEngineBootstrap.mm.
+
+--- a/chrome/app/theme/chromium/BRANDING
++++ b/chrome/app/theme/chromium/BRANDING
+@@ -1,10 +1,10 @@
+-COMPANY_FULLNAME=The Chromium Authors
+-COMPANY_SHORTNAME=The Chromium Authors
+-PRODUCT_FULLNAME=Chromium
+-PRODUCT_SHORTNAME=Chromium
+-PRODUCT_INSTALLER_FULLNAME=Chromium Installer
+-PRODUCT_INSTALLER_SHORTNAME=Chromium Installer
+-COPYRIGHT=Copyright @LASTCHANGE_YEAR@ The Chromium Authors. All rights reserved.
+-MAC_BUNDLE_ID=org.chromium.Chromium
++COMPANY_FULLNAME=Digital Caviar
++COMPANY_SHORTNAME=Digital Caviar
++PRODUCT_FULLNAME=Sephr
++PRODUCT_SHORTNAME=Sephr
++PRODUCT_INSTALLER_FULLNAME=Sephr Installer
++PRODUCT_INSTALLER_SHORTNAME=Sephr Installer
++COPYRIGHT=Copyright @LASTCHANGE_YEAR@ Digital Caviar. All rights reserved.
++MAC_BUNDLE_ID=com.sephr.framework
+ MAC_CREATOR_CODE=Cr24
+-MAC_TEAM_ID=
++MAC_TEAM_ID=U2UY24TMGG

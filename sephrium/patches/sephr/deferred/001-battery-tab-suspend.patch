@@ -1,0 +1,66 @@
+# Sephr — 001-battery-tab-suspend
+#
+# Adds a per-tab suspension scheduler to TabStripModel. Background tabs are
+# frozen (SetPageFrozen) after kSephrSuspendTimeoutSeconds of inactivity and
+# their renderer processes fast-shutdown. Navigation state is preserved in
+# the FrameTree so re-activation restores the tab without a full reload.
+#
+# Header-side declaration and timeout constant are added alongside so the
+# .h and .cc pair apply together.
+
+--- a/chrome/browser/ui/tabs/tab_strip_model.h
++++ b/chrome/browser/ui/tabs/tab_strip_model.h
+@@ -1,6 +1,10 @@
+ #ifndef CHROME_BROWSER_UI_TABS_TAB_STRIP_MODEL_H_
+ #define CHROME_BROWSER_UI_TABS_TAB_STRIP_MODEL_H_
+
++namespace sephr {
++constexpr int kSephrSuspendTimeoutSeconds = 300;
++}  // namespace sephr
++
+ class TabStripModel {
+  public:
+@@ -200,6 +204,11 @@ class TabStripModel {
+   // ... existing members ...
+
++  // Sephr: schedule suspension of the tab at `index` after the configured
++  // timeout. No-op if the tab is active or currently loading.
++  void SephrScheduleSuspension(int index);
++  void SephrSuspendTab(int index);
++
+   base::WeakPtrFactory<TabStripModel> weak_factory_{this};
+ };
+
+--- a/chrome/browser/ui/tabs/tab_strip_model.cc
++++ b/chrome/browser/ui/tabs/tab_strip_model.cc
+@@ -10,6 +10,36 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+
++#include "base/task/sequenced_task_runner.h"
++#include "base/time/time.h"
++#include "content/public/browser/render_process_host.h"
++#include "content/public/browser/web_contents.h"
++
++void TabStripModel::SephrScheduleSuspension(int index) {
++  if (index == active_index()) return;
++  auto* wc = GetWebContentsAt(index);
++  if (!wc || wc->IsLoading()) return;
++  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE,
++      base::BindOnce(&TabStripModel::SephrSuspendTab,
++                     weak_factory_.GetWeakPtr(), index),
++      base::Seconds(sephr::kSephrSuspendTimeoutSeconds));
++}
++
++void TabStripModel::SephrSuspendTab(int index) {
++  if (index == active_index()) return;
++  auto* wc = GetWebContentsAt(index);
++  if (!wc) return;
++  wc->SetPageFrozen(true);
++  if (auto* rph = wc->GetPrimaryMainFrame()->GetProcess()) {
++    rph->FastShutdownIfPossible(/*page_count=*/0, /*skip_unload_handlers=*/false);
++  }
++}
++
+ TabStripModel::TabStripModel(TabStripModelDelegate* delegate, Profile* profile)
+     : delegate_(delegate), profile_(profile) {}

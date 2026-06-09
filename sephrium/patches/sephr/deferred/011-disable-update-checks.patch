@@ -1,0 +1,27 @@
+# Sephr — 011-disable-update-checks
+#
+# Removes all Chromium-driven update checking. Sparkle (app layer) owns
+# update delivery. This patch no-ops the update client so it can't beacon
+# out even if reached accidentally.
+
+--- a/chrome/browser/google/google_update_settings.cc
++++ b/chrome/browser/google/google_update_settings.cc
+@@ -40,9 +40,9 @@
+ bool GoogleUpdateSettings::AreAutoupdatesEnabled() {
+-  return true;
++  return false;   // Sephr: Sparkle owns updates.
+ }
+
+ bool GoogleUpdateSettings::SetCollectStatsConsent(bool consented) {
+-  return SetConsentInPrefs(consented);
++  return false;   // Sephr: never collect stats.
+ }
+
+--- a/components/update_client/update_engine.cc
++++ b/components/update_client/update_engine.cc
+@@ -90,6 +90,9 @@
+ void UpdateEngine::InvokeOperation(...) {
++  // Sephr: short-circuit. No update checks ever leave the device.
++  std::move(callback).Run(Error::UPDATE_IN_PROGRESS);
++  return;
+ }

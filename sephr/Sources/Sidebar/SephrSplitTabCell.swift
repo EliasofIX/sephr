@@ -1,0 +1,163 @@
+import AppKit
+
+/// Sidebar representation of a split-tab group: the two split tabs shown
+/// as one row of two side-by-side pills (favicon + title each), matching
+/// the Zen-style combined pill. Clicking either half (re-)enters the
+/// split view. The active pane reads brighter than the inactive one.
+final class SephrSplitTabCell: NSView {
+
+    let primary: SephrTab
+    let secondary: SephrTab
+    /// Tapped either half → enter / focus the split.
+    var onSelect: (() -> Void)?
+
+    private let primaryHalf: SephrSplitHalfView
+    private let secondaryHalf: SephrSplitHalfView
+
+    init(primary: SephrTab, secondary: SephrTab) {
+        self.primary = primary
+        self.secondary = secondary
+        self.primaryHalf = SephrSplitHalfView(tab: primary)
+        self.secondaryHalf = SephrSplitHalfView(tab: secondary)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        primaryHalf.onClick = { [weak self] in self?.onSelect?() }
+        secondaryHalf.onClick = { [weak self] in self?.onSelect?() }
+
+        addSubview(primaryHalf)
+        addSubview(secondaryHalf)
+
+        // Manual layout rather than NSStackView: a horizontal stack only
+        // offers .centerY/.top/.bottom alignment (no perpendicular fill),
+        // so the halves would collapse to their ~16pt content height inside
+        // the 30pt row and read as squished lozenges. Pinning each half's
+        // top+bottom to the cell makes them full-height rounded pills, and
+        // the equal-width constraint splits the row 50/50 with a small gap.
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 30),
+
+            primaryHalf.topAnchor.constraint(equalTo: topAnchor),
+            primaryHalf.bottomAnchor.constraint(equalTo: bottomAnchor),
+            primaryHalf.leadingAnchor.constraint(equalTo: leadingAnchor),
+
+            secondaryHalf.topAnchor.constraint(equalTo: topAnchor),
+            secondaryHalf.bottomAnchor.constraint(equalTo: bottomAnchor),
+            secondaryHalf.leadingAnchor.constraint(
+                equalTo: primaryHalf.trailingAnchor, constant: 5),
+            secondaryHalf.trailingAnchor.constraint(equalTo: trailingAnchor),
+
+            primaryHalf.widthAnchor.constraint(
+                equalTo: secondaryHalf.widthAnchor),
+        ])
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(refresh),
+            name: .sephrTabModelChanged, object: nil)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func refresh() {
+        primaryHalf.refresh()
+        secondaryHalf.refresh()
+    }
+}
+
+/// One half of a `SephrSplitTabCell` — a glass pill with a tab's favicon
+/// and (truncating) title, dimmed when the tab isn't the active pane.
+final class SephrSplitHalfView: NSView {
+
+    let tab: SephrTab
+    var onClick: (() -> Void)?
+
+    private let favicon = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+
+    init(tab: SephrTab) {
+        self.tab = tab
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.masksToBounds = true
+
+        let glass: NSView
+        if #available(macOS 26, *) {
+            let g = NSGlassEffectView()
+            g.cornerRadius = 8
+            g.tintColor = nil
+            glass = g
+        } else {
+            let v = NSVisualEffectView()
+            v.material = .hudWindow
+            v.blendingMode = .withinWindow
+            v.state = .active
+            v.wantsLayer = true
+            v.layer?.cornerRadius = 8
+            v.layer?.masksToBounds = true
+            glass = v
+        }
+        glass.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(glass)
+
+        favicon.imageScaling = .scaleProportionallyUpOrDown
+        favicon.translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.font = .systemFont(ofSize: 12)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Let the title shrink so two halves fit a narrow sidebar row.
+        titleLabel.setContentCompressionResistancePriority(.defaultLow,
+                                                           for: .horizontal)
+
+        addSubview(favicon)
+        addSubview(titleLabel)
+
+        NSLayoutConstraint.activate([
+            glass.topAnchor.constraint(equalTo: topAnchor),
+            glass.leadingAnchor.constraint(equalTo: leadingAnchor),
+            glass.trailingAnchor.constraint(equalTo: trailingAnchor),
+            glass.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            favicon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            favicon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            favicon.widthAnchor.constraint(equalToConstant: 14),
+            favicon.heightAnchor.constraint(equalToConstant: 14),
+
+            titleLabel.leadingAnchor.constraint(
+                equalTo: favicon.trailingAnchor, constant: 6),
+            titleLabel.trailingAnchor.constraint(
+                equalTo: trailingAnchor, constant: -8),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        refresh()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func refresh() {
+        if let img = tab.favicon {
+            favicon.image = img
+            favicon.contentTintColor = nil
+        } else {
+            favicon.image = NSImage(systemSymbolName: "globe",
+                                     accessibilityDescription: nil)
+            favicon.contentTintColor = .secondaryLabelColor
+        }
+        titleLabel.stringValue = tab.title.isEmpty ? tab.url : tab.title
+        // Active pane reads brighter, the other slightly dimmed.
+        alphaValue = tab.isActive ? 1.0 : 0.7
+    }
+
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) {
+            onClick?()
+        }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+}

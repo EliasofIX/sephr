@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Sephr</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.sephr.app</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleExecutable</key>
+    <string>Sephr</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <!-- Sparkle. SUFeedURL must point at a real appcast.xml at release time
+         (the build script warns if it's still pointing at updates.example.com).
+         SUPublicEDKey is the base64-encoded Ed25519 public key — generate with
+         `generate_keys` from the Sparkle toolset and paste here. -->
+    <key>SUFeedURL</key>
+    <string>https://updates.example.com/sephr/appcast.xml</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUPublicEDKey</key>
+    <string>REPLACE_WITH_PUBLIC_KEY</string>
+
+    <!-- No auto-update UI -->
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+
+    <!-- Bluetooth — required for the caBLE / hybrid WebAuthn transport
+         (phone-as-authenticator passkeys). Chromium refuses to enumerate
+         BLE devices when this key is missing and prints
+         "Cannot use Bluetooth because the responsible app for the process
+         does not have Bluetooth metadata in its Info.plist." to the FIDO
+         log. Without it, only USB security keys and Apple Keychain
+         (under Developer ID signing) can serve passkey requests; QR-code
+         phone-as-authenticator flows are unavailable. -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Sephr uses Bluetooth to communicate with passkey authenticators on nearby devices (phones, tablets) when you scan a QR code on a sign-in page.</string>
+
+    <!-- URL schemes Sephr handles.
+
+         * http / https — this is what makes Sephr eligible to be the system
+           default web browser. macOS only lists an app in
+           System Settings → Desktop & Dock → "Default web browser" if it
+           registers as a handler for BOTH http and https. The actual opens
+           are routed into Sephr's CAL tabs by the external-URL bridge
+           (sephr::MaybeRouteExternalUrl, hooked at AppController's
+           -openUrlsReplacingNTP:), not into a native Chromium window.
+         * sephr — internal pages (sephr://… surfaces).
+
+         CFBundleURLName / LSHandlerRank=Owner declares Sephr as a first-class
+         http(s) handler rather than an alternate. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.sephr.app.web</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>http</string>
+                <string>https</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.sephr.app.internal</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>sephr</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- Document types Sephr can open. Declaring the HTML / web-content
+         UTIs lets Finder offer Sephr under "Open With" and round out the
+         browser role (double-clicking a .html file, "Open in Sephr"). These
+         arrive through the same -openUrlsReplacingNTP: chokepoint as link
+         opens (as file:// URLs) and are routed into CAL tabs. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>HTML document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.html</string>
+                <string>public.xhtml</string>
+                <string>org.w3.web-archive</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Web site location</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.url</string>
+                <string>com.apple.web-internet-location</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

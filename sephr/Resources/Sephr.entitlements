@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Dev / ad-hoc only. With Developer ID signing this disable can be
+         dropped — Sparkle ships notarized binaries from sparkle-project
+         that match a real Team ID. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!--
+        Chromium ships its own helpers signed with Apple's "team" (well, our
+        ad-hoc identity once we re-sign them). The hardened runtime would
+        block them under their normal posture; disable for now.
+    -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Render web content / talk to the network. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- Chrome's renderers spawn child processes via posix_spawn. -->
+    <key>com.apple.security.inherit</key>
+    <true/>
+
+    <!-- WebAuthn / passkeys. See PASSKEYS.md for the full story. The
+         five groups below are the access groups baked into the Chromium
+         framework at compile time (Team ID U2UY24TMGG, Bundle ID
+         com.sephr.framework, per patch 014-brand-mac-product-names).
+         Under ad-hoc signing these are silently ignored; only a real
+         Developer ID matching team U2UY24TMGG binds them. -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>U2UY24TMGG.com.sephr.framework.webauthn</string>
+        <string>U2UY24TMGG.com.sephr.framework.webauthn-uvk</string>
+        <string>U2UY24TMGG.com.sephr.framework.unexportable-keys</string>
+        <string>U2UY24TMGG.com.sephr.framework.devicetrust</string>
+        <string>U2UY24TMGG.com.sephr.framework.secure-payment-confirmation</string>
+    </array>
+</dict>
+</plist>
