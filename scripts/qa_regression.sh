@@ -90,7 +90,7 @@ grep -q '\[sephr\] UI-boot callback firing' "$LOG" \
     && pass "UI-boot callback fired" \
     || fail "UI-boot callback never fired"
 
-grep -q 'window count after delegate fire: [1-9]' "$LOG" \
+grep -q 'window count after wc.showWindow: [1-9]' "$LOG" \
     && pass "NSApp.windows.count >= 1 after delegate" \
     || fail "no window after delegate fire"
 
