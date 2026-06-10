@@ -39,6 +39,20 @@ SEPHRIUM_EXPORT void SephriumPumpOnce(void);
 typedef void (*SephriumUiBootCallback)(void);
 SEPHRIUM_EXPORT void SephriumSetUiBootCallback(SephriumUiBootCallback callback);
 
+// External-URL routing — fired when the OS asks Sephr (as the system
+// default browser) to open a URL: a link clicked in another app, a Handoff
+// hand-off, or the URL that cold-launched the app. Chromium would otherwise
+// open these in a native browser window; this callback hands them to the
+// embedder so each becomes a real Sephr/CAL tab instead. `url` is transient
+// (copy it before returning). Register from UI-boot once the tab UI exists;
+// any URL that arrived earlier (the cold-launch race) is buffered on the
+// Chromium side and replayed here in order the moment you register. Pass
+// NULL to clear. `ctx` is passed back verbatim on every invocation.
+typedef void (*SephriumOpenExternalURLCallback)(void* ctx, const char* url);
+SEPHRIUM_EXPORT void
+SephriumSetOpenExternalURLCallback(SephriumOpenExternalURLCallback callback,
+                                   void* ctx);
+
 // ---- Profile --------------------------------------------------------------
 
 typedef struct SephriumProfileOpaque* SephriumProfileRef;
@@ -104,6 +118,9 @@ SephriumWebContentsSetVisible(SephriumWebContentsRef, int visible);
 // Caller owns the returned char*; free with SephriumStringFree.
 SEPHRIUM_EXPORT char* SephriumWebContentsCopyURL(SephriumWebContentsRef);
 SEPHRIUM_EXPORT char* SephriumWebContentsCopyTitle(SephriumWebContentsRef);
+
+// Returns 1 while the page is playing audio (used for sleep exemption).
+SEPHRIUM_EXPORT int SephriumWebContentsIsAudible(SephriumWebContentsRef);
 
 typedef void (*SephriumNavCallback)(void* ctx,
                                    const char* url,

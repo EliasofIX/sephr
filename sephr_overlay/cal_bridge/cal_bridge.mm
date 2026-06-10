@@ -739,6 +739,17 @@ extern "C" void SephriumSetUiBootCallback(SephriumUiBootCallback callback) {
   sephr::SetUiBootCallback(reinterpret_cast<sephr::UiBootCallback>(callback));
 }
 
+extern "C" void SephriumSetOpenExternalURLCallback(
+    SephriumOpenExternalURLCallback callback,
+    void* ctx) {
+  // Forward to the router in //chrome/browser. The C ABI typedef and
+  // sephr::ExternalUrlCallback share the same (void*, const char*) shape,
+  // so a reinterpret_cast keeps cal_bridge.h out of the chrome/browser
+  // header (same decoupling trick as the UI-boot callback above).
+  sephr::SetExternalUrlCallback(
+      reinterpret_cast<sephr::ExternalUrlCallback>(callback), ctx);
+}
+
 // ---- Profile --------------------------------------------------------------
 
 extern "C" SephriumProfileRef SephriumProfileGet(const char* profile_id,
@@ -965,9 +976,15 @@ extern "C" void SephriumWebContentsSetVisible(SephriumWebContentsRef ref,
   // compositor the hidden->visible transition it needs to request a fresh
   // frame for the now-attached surface. This is the embedder's half of the
   // foreground/background-tab contract that content::WebContents expects.
-  if (visible) {
+  //
+  // Idempotence: WasShown()/WasHidden() are not free — a redundant
+  // WasShown re-requests frames from the compositor. Only transition on
+  // an actual state change.
+  const bool currently_visible =
+      c->GetVisibility() == content::Visibility::VISIBLE;
+  if (visible && !currently_visible) {
     c->WasShown();
-  } else {
+  } else if (!visible && currently_visible) {
     c->WasHidden();
   }
 }
@@ -984,6 +1001,13 @@ extern "C" char* SephriumWebContentsCopyTitle(SephriumWebContentsRef ref) {
   content::WebContents* c = AsHolder(ref)->contents();
   if (!c) return DupCString(std::string());
   return DupCString(base::UTF16ToUTF8(c->GetTitle()));
+}
+
+extern "C" int SephriumWebContentsIsAudible(SephriumWebContentsRef ref) {
+  if (!ref) return 0;
+  content::WebContents* c = AsHolder(ref)->contents();
+  if (!c) return 0;
+  return c->IsCurrentlyAudible() ? 1 : 0;
 }
 
 extern "C" void SephriumWebContentsSetNavCallback(SephriumWebContentsRef ref,

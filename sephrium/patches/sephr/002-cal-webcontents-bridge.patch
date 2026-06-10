@@ -16,8 +16,9 @@
 
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
-@@ -44,4 +47,29 @@
+@@ -44,4 +47,30 @@
  _SephriumWebContentsCopyTitle
++_SephriumWebContentsIsAudible
  _SephriumWebContentsSetNavCallback
  _SephriumWebContentsCaptureSnapshot
 +# ---- Sephr CAL bridge -----------------------------------------------------
