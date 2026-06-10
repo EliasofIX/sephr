@@ -977,14 +977,16 @@ extern "C" void SephriumWebContentsSetVisible(SephriumWebContentsRef ref,
   // frame for the now-attached surface. This is the embedder's half of the
   // foreground/background-tab contract that content::WebContents expects.
   //
-  // Idempotence: WasShown()/WasHidden() are not free — a redundant
-  // WasShown re-requests frames from the compositor. Only transition on
-  // an actual state change.
-  const bool currently_visible =
-      c->GetVisibility() == content::Visibility::VISIBLE;
-  if (visible && !currently_visible) {
+  // Idempotence with exact transitions: WasShown()/WasHidden() are not
+  // free — a redundant WasShown re-requests frames from the compositor.
+  // OCCLUDED (set by Chromium's macOS occlusion tracker) counts as
+  // needs-WasShown when showing AND needs-WasHidden when hiding, so an
+  // occluded contents still lands HIDDEN without relying on the Cocoa
+  // view's parallel window-detach update.
+  const content::Visibility vis = c->GetVisibility();
+  if (visible && vis != content::Visibility::VISIBLE) {
     c->WasShown();
-  } else if (!visible && currently_visible) {
+  } else if (!visible && vis != content::Visibility::HIDDEN) {
     c->WasHidden();
   }
 }
