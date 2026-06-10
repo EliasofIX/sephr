@@ -44,6 +44,10 @@ typedef void (^CALCloseRequestCallback)(void);
 @property (nonatomic, readonly) BOOL canGoBack;
 @property (nonatomic, readonly) BOOL canGoForward;
 @property (nonatomic, readonly) BOOL isLoading;
+// YES while sleeping (WebContents destroyed, view + tab identity intact).
+@property (nonatomic, readonly) BOOL isAsleep;
+// YES if the page is currently playing audio (never YES while asleep).
+@property (nonatomic, readonly) BOOL isAudible;
 
 // Callbacks (dispatched on the main thread)
 @property (nonatomic, copy, nullable) CALNavigationCallback onNavigation;
@@ -59,6 +63,13 @@ typedef void (^CALCloseRequestCallback)(void);
 - (void)blur;
 - (void)freeze;
 - (void)unfreeze;
+// Tab sleeping: sleep destroys the WebContents (renderer process and
+// memory released) but keeps this view and its sidebar/tab-model identity;
+// wake recreates the contents at the last committed URL and re-attaches if
+// the view is in a window. Both are idempotent no-ops when already in the
+// requested state.
+- (void)sleep;
+- (void)wake;
 
 // Thumbnail capture (async; completion runs on main)
 - (void)captureThumbWithSize:(NSSize)size

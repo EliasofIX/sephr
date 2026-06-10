@@ -304,30 +304,83 @@ static void CAL_CloseRequestCallback(void* ctx) {
     SephriumWebContentsSetVisible(_webContents, 1);
 }
 
+// Tear down the live WebContents, leaving the view reusable. Used by
+// dealloc AND sleep.
+//
+// CRITICAL ordering — clear callbacks BEFORE destroying the WebContents.
+// The bridge's holder destructor cancels in-flight observers, but any
+// callback already on the dispatch queue would see a freed CALWebView via
+// (__bridge void*)self. Setting them to NULL gives the bridge a chance to
+// no-op those re-entries. (For sleep the view itself survives, but the
+// contents ref the queued callback captured would be dangling.)
+- (void)_teardownWebContents {
+    if (!_webContents) return;
+    SephriumWebContentsSetNavCallback(_webContents, NULL, NULL);
+    SephriumWebContentsSetFaviconCallback(_webContents, NULL, NULL);
+    SephriumWebContentsSetLoadingCallback(_webContents, NULL, NULL);
+    SephriumWebContentsSetNewTabRequestCallback(_webContents, NULL, NULL);
+    SephriumWebContentsSetTargetURLCallback(_webContents, NULL, NULL);
+    SephriumWebContentsSetPopupRequestCallback(_webContents, NULL, NULL);
+    SephriumWebContentsSetCloseRequestCallback(_webContents, NULL, NULL);
+    // Detach the chromium NSView before we destroy its owning
+    // WebContents. After destroy the underlying RenderWidgetHostView
+    // is gone and any AppKit hit-testing into the still-retained
+    // subview would walk freed memory.
+    for (NSView* sub in [self.subviews copy]) {
+        [sub removeFromSuperview];
+    }
+    // Un-latch the attach state so a later wake re-runs the
+    // viewDidMoveToWindow attach path for the NEW native view (dealloc
+    // doesn't care, sleep does).
+    _chromiumViewAttached = NO;
+    SephriumWebContentsRef wc = _webContents;
+    _webContents = NULL;
+    SephriumWebContentsDestroy(wc);
+}
+
 - (void)dealloc {
-    if (_webContents) {
-        // CRITICAL ordering — clear callbacks BEFORE destroying the
-        // WebContents. The bridge's holder destructor cancels in-flight
-        // observers, but any callback already on the dispatch queue would
-        // see a freed CALWebView via (__bridge void*)self. Setting them to
-        // NULL gives the bridge a chance to no-op those re-entries.
-        SephriumWebContentsSetNavCallback(_webContents, NULL, NULL);
-        SephriumWebContentsSetFaviconCallback(_webContents, NULL, NULL);
-        SephriumWebContentsSetLoadingCallback(_webContents, NULL, NULL);
-        SephriumWebContentsSetNewTabRequestCallback(_webContents, NULL, NULL);
-        SephriumWebContentsSetTargetURLCallback(_webContents, NULL, NULL);
-        SephriumWebContentsSetPopupRequestCallback(_webContents, NULL, NULL);
-        SephriumWebContentsSetCloseRequestCallback(_webContents, NULL, NULL);
-        // Detach the chromium NSView before we destroy its owning
-        // WebContents. After destroy the underlying RenderWidgetHostView
-        // is gone and any AppKit hit-testing into the still-retained
-        // subview would walk freed memory.
-        for (NSView* sub in [self.subviews copy]) {
-            [sub removeFromSuperview];
-        }
-        SephriumWebContentsRef wc = _webContents;
-        _webContents = NULL;
-        SephriumWebContentsDestroy(wc);
+    [self _teardownWebContents];
+}
+
+- (BOOL)isAsleep { return _webContents == NULL && _profileID != nil; }
+
+- (BOOL)isAudible {
+    return _webContents && SephriumWebContentsIsAudible(_webContents) != 0;
+}
+
+// Snapshot the committed URL, then destroy the WebContents. The view
+// object (and its place in the tab model / sidebar) survives; wake
+// recreates the contents at the snapshotted URL. _currentTitle is left
+// as-is — CAL_NavCallback kept it current, so the sidebar label survives
+// the nap too.
+- (void)sleep {
+    if (!_webContents) return;
+    char* u = SephriumWebContentsCopyURL(_webContents);
+    NSString* live = CAL_StringSafe(u);
+    if (u) SephriumStringFree(u);
+    if (live.length) _currentURL = [live copy];
+    [self _teardownWebContents];
+}
+
+// Recreate the WebContents at the last committed URL. Mirrors
+// +webViewWithURL:profile: — created hidden/detached; if the view is
+// currently in a window, re-run the attach path normally driven by
+// viewDidMoveToWindow so it paints (it re-fetches the native view,
+// re-parents it, pushes the current size and flips hidden->visible).
+- (void)wake {
+    if (_webContents) return;
+    CALProfile* profile = [CALProfile profileWithID:_profileID];
+    SephriumProfileRef profileRef = (SephriumProfileRef)profile.bridgeHandle;
+    if (!profileRef) {
+        NSLog(@"[sephr/CALWebView] wake: NULL profile ref for %@", _profileID);
+        return;
+    }
+    _lastReportedSize = NSZeroSize;  // force the next SetSize through
+    _webContents = SephriumWebContentsCreate(
+        profileRef, [(_currentURL ?: @"about:blank") UTF8String]);
+    [self _wireContentsCallbacks];
+    if (self.window) {
+        [self viewDidMoveToWindow];
     }
 }
 
