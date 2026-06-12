@@ -14,6 +14,11 @@
 // bridge (an adopted window.open popup) instead of creating a fresh one.
 + (instancetype)_adoptingWebContents:(SephriumWebContentsRef)ref
                              profile:(NSString*)profileID;
+// Push effective visibility (in a window AND that window at least partially
+// on glass) down to the WebContents. The single funnel for WasShown/WasHidden.
+- (void)_updateEffectiveVisibility;
+// NSWindowDidChangeOcclusionStateNotification handler for the current window.
+- (void)_windowOcclusionDidChange:(NSNotification*)note;
 @end
 
 // Defensive UTF-8 string wrapper. -stringWithUTF8String: returns nil if the
@@ -261,6 +266,26 @@ static void CAL_CloseRequestCallback(void* ctx) {
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
+
+    // Re-target occlusion observation at the current window. macOS clears
+    // NSWindowOcclusionStateVisible for covered, minimized, Cmd+H-hidden,
+    // and other-Space windows, so this one notification covers every
+    // "window not actually on glass" case — without it the active tab of a
+    // backgrounded window kept producing frames forever (renderer ~12% +
+    // GPU ~17% CPU, the 2026-06-11 battery-drain root cause). Registered
+    // even while asleep (_webContents NULL) so a wake() in an occluded
+    // window starts out hidden.
+    NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
+    [nc removeObserver:self
+                  name:NSWindowDidChangeOcclusionStateNotification
+                object:nil];
+    if (self.window) {
+        [nc addObserver:self
+               selector:@selector(_windowOcclusionDidChange:)
+                   name:NSWindowDidChangeOcclusionStateNotification
+                 object:self.window];
+    }
+
     if (!_webContents) return;
 
     if (!self.window) {
@@ -293,15 +318,31 @@ static void CAL_CloseRequestCallback(void* ctx) {
         }
     }
 
-    // Entered a window — make the WebContents visible. It was created
-    // hidden (see SephriumWebContentsCreate), so THIS is the
-    // hidden->visible transition that forces the renderer to produce a
-    // frame for the now-attached surface. Without it the first display of a
-    // tab could stay blank until a switch-away/back cycle (reload didn't
-    // help — reload doesn't change visibility). Visibility-only, no
-    // page-freeze / focus, so it's safe even before the initial navigation
-    // has committed.
-    SephriumWebContentsSetVisible(_webContents, 1);
+    // Entered a window — push effective visibility. The WebContents was
+    // created hidden (see SephriumWebContentsCreate), so when the window is
+    // on glass THIS is the hidden->visible transition that forces the
+    // renderer to produce a frame for the now-attached surface. Without it
+    // the first display of a tab could stay blank until a switch-away/back
+    // cycle (reload didn't help — reload doesn't change visibility). If the
+    // window is occluded right now (e.g. session restore behind another
+    // app), we stay hidden and the occlusion notification performs that
+    // same transition at first expose. Visibility-only, no page-freeze /
+    // focus, so it's safe even before the initial navigation has committed.
+    [self _updateEffectiveVisibility];
+}
+
+- (void)_windowOcclusionDidChange:(NSNotification*)note {
+    [self _updateEffectiveVisibility];
+}
+
+- (void)_updateEffectiveVisibility {
+    if (!_webContents) return;
+    BOOL onGlass =
+        self.window != nil &&
+        (self.window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+    // The bridge's SetVisible is idempotent with exact 3-state transitions
+    // (fc3b0a9 / 28465a0), so repeated same-value pushes are free.
+    SephriumWebContentsSetVisible(_webContents, onGlass ? 1 : 0);
 }
 
 // Tear down the live WebContents, leaving the view reusable. Used by
@@ -339,6 +380,9 @@ static void CAL_CloseRequestCallback(void* ctx) {
 }
 
 - (void)dealloc {
+    // Non-block observers have been auto-removed since 10.11, but the
+    // codebase style is explicit teardown.
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self _teardownWebContents];
 }
 
