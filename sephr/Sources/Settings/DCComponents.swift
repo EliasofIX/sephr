@@ -1,6 +1,37 @@
 import SwiftUI
 import AppKit
 
+// MARK: — TextField write debounce
+
+/// Coalesce free-text field writes (Profile name, Custom Search URL) so a
+/// burst of keystrokes lands as a single `UserDefaults.set` instead of one
+/// per character. UserDefaults posts NSUserDefaultsDidChangeNotification +
+/// KVO globally on each `set`; the debounce squashes the storm into one
+/// trailing write 250 ms after the typist pauses. Always flush from the
+/// pane's `onDisappear` so the last edit isn't lost on a tab swap.
+@MainActor
+final class TextDebouncer: ObservableObject {
+    private var work: DispatchWorkItem?
+    private let delay: TimeInterval
+    init(delay: TimeInterval = 0.25) { self.delay = delay }
+    deinit { work?.cancel() }
+    /// Schedule `apply` to run after `delay`, cancelling any pending one.
+    func schedule(_ apply: @escaping () -> Void) {
+        work?.cancel()
+        let w = DispatchWorkItem(block: apply)
+        work = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: w)
+    }
+    /// Run any pending write immediately. Safe to call when nothing is
+    /// pending — it just no-ops.
+    func flush() {
+        guard let w = work else { return }
+        w.cancel()
+        work = nil
+        w.perform()
+    }
+}
+
 /// Structural components for the settings surface, built on the DIGITAL
 /// CAVIAR tokens in `DCDesign.swift`. These are the pieces the Arc-shaped
 /// layout needs that the base row/section primitives don't cover: the
@@ -29,9 +60,15 @@ struct VisualEffectBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ v: NSVisualEffectView, context: Context) {
-        v.material = material
-        v.blendingMode = blending
-        v.state = .active
+        // Equality-guard each property — SwiftUI calls updateNSView on
+        // every parent body recompute and the values are constants in
+        // every existing call site. Assigning identical values still
+        // triggers the NSVisualEffectView's internal KVO chain and a
+        // layer reconfigure pass; the guards make this a no-op when the
+        // representable is mounted with stable values.
+        if v.material != material { v.material = material }
+        if v.blendingMode != blending { v.blendingMode = blending }
+        if v.state != .active { v.state = .active }
     }
 }
 
@@ -79,12 +116,34 @@ struct DCTabBar<Tab: Hashable>: View {
     @ViewBuilder
     private func button(for item: DCTabItem<Tab>) -> some View {
         let isSelected = item.tab == selection
-        Button {
-            withAnimation(reduceMotion ? nil
-                          : .spring(response: 0.32, dampingFraction: 0.86)) {
+        TabBarButton(item: item,
+                     isSelected: isSelected,
+                     namespace: pill,
+                     reduceMotion: reduceMotion) {
+            withAnimation(reduceMotion ? nil : DC.Motion.spring) {
                 selection = item.tab
             }
-        } label: {
+        }
+    }
+}
+
+/// One pill button in `DCTabBar`. Lifted out of the parent so the per-
+/// button hover state lives in its own struct (Button-style-styled views
+/// inside a ForEach share their `@State` if declared on the outer view).
+/// Unselected tabs gain a subtle hover ink-brightening; the selected tab
+/// is already filled and skips the hover treatment so the matched-geometry
+/// pill doesn't fight a duplicate background.
+private struct TabBarButton<Tab: Hashable>: View {
+    let item: DCTabItem<Tab>
+    let isSelected: Bool
+    let namespace: Namespace.ID
+    let reduceMotion: Bool
+    let onTap: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onTap) {
             VStack(spacing: 4) {
                 Image(systemName: item.systemImage)
                     .font(.system(size: 16, weight: .medium))
@@ -93,7 +152,8 @@ struct DCTabBar<Tab: Hashable>: View {
                     .font(DC.TypeScale.caption)
                     .lineLimit(1)
             }
-            .foregroundStyle(isSelected ? DC.Ink.field : DC.Ink.ink2)
+            .foregroundStyle(isSelected ? DC.Ink.field
+                             : (hovering ? DC.Ink.ink : DC.Ink.ink2))
             .frame(minWidth: 60, minHeight: 44)
             .padding(.vertical, DC.Space.s)
             .padding(.horizontal, 6)
@@ -101,7 +161,11 @@ struct DCTabBar<Tab: Hashable>: View {
                 if isSelected {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .fill(DC.Ink.ink)
-                        .matchedGeometryEffect(id: "selection", in: pill)
+                        .matchedGeometryEffect(id: "selection",
+                                               in: namespace)
+                } else if hovering {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(DC.Ink.surface)
                 }
             }
             .contentShape(Rectangle())
@@ -111,50 +175,7 @@ struct DCTabBar<Tab: Hashable>: View {
         .accessibilityLabel(item.title)
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton]
                                             : .isButton)
-    }
-}
-
-// MARK: — Generated gradient avatar
-
-/// Generated gradient "portrait" — Sephr's analogue of Arc's profile
-/// blobs. Deterministic from a seed so a given profile always renders the
-/// same swatch. The single sanctioned splash of colour in the otherwise
-/// monochrome settings surface; everything else stays on the value ramp.
-struct DCGradientAvatar: View {
-    let seed: Int
-
-    var body: some View {
-        LinearGradient(colors: Self.palette(for: seed),
-                       startPoint: .top,
-                       endPoint: .bottomTrailing)
-            .overlay(
-                // A soft highlight so the swatch reads as a rounded form,
-                // not a flat fill — the Apple specular cue, in colour.
-                RadialGradient(
-                    colors: [Color.white.opacity(0.22), .clear],
-                    center: .init(x: 0.32, y: 0.22),
-                    startRadius: 2, endRadius: 160)
-            )
-    }
-
-    /// Muted, Arc-adjacent gradients. Indexed cyclically by seed.
-    static func palette(for seed: Int) -> [Color] {
-        let sets: [[Color]] = [
-            [Color(red: 0.42, green: 0.46, blue: 0.78),
-             Color(red: 0.60, green: 0.46, blue: 0.72),
-             Color(red: 0.28, green: 0.36, blue: 0.55)],
-            [Color(red: 0.26, green: 0.54, blue: 0.60),
-             Color(red: 0.44, green: 0.63, blue: 0.56)],
-            [Color(red: 0.78, green: 0.52, blue: 0.46),
-             Color(red: 0.66, green: 0.42, blue: 0.50)],
-            [Color(red: 0.50, green: 0.52, blue: 0.58),
-             Color(red: 0.32, green: 0.34, blue: 0.40)],
-            [Color(red: 0.78, green: 0.66, blue: 0.40),
-             Color(red: 0.60, green: 0.50, blue: 0.42)],
-            [Color(red: 0.40, green: 0.60, blue: 0.74),
-             Color(red: 0.30, green: 0.44, blue: 0.62)],
-        ]
-        let n = sets.count
-        return sets[((seed % n) + n) % n]
+        .onHover { hovering = $0 }
+        .animation(reduceMotion ? nil : DC.Motion.hover, value: hovering)
     }
 }

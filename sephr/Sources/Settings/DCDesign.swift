@@ -69,6 +69,31 @@ enum DC {
                                           design: .monospaced)
     }
 
+    // MARK: — Motion
+    //
+    // One source of truth for every micro-animation in the native chrome.
+    // Pre-tokens the surface mixed `.spring(response: 0.25, 0.9)` (primary
+    // button), `.spring(0.32, 0.86)` (tab bar), `.spring(0.35, 0.9)`
+    // (toggle), `.easeOut(0.12)` (command bar), `.easeInOut(0.16)` (pane
+    // crossfade), `.easeOut(0.15)` (peek hover). The values were all
+    // plausible in isolation but read incoherent next to each other.
+    //
+    //   • spring        — selection / state change. Premium settled feel,
+    //                     matches the tab-bar pill's existing motion.
+    //   • springSnappy  — button press + release. Sub-perception fast.
+    //   • easeOutFast   — quick reveals (command bar, hover swaps).
+    //   • easeOutPane   — pane crossfades (settings, layered overlays).
+    //   • hover         — hover-state opacity/scale transitions on chrome.
+    enum Motion {
+        static let spring       = Animation.spring(response: 0.32,
+                                                   dampingFraction: 0.86)
+        static let springSnappy = Animation.spring(response: 0.22,
+                                                   dampingFraction: 0.9)
+        static let easeOutFast  = Animation.easeOut(duration: 0.12)
+        static let easeOutPane  = Animation.easeInOut(duration: 0.16)
+        static let hover        = Animation.easeOut(duration: 0.14)
+    }
+
     static var hairlineWidth: CGFloat {
         1.0 / (NSScreen.main?.backingScaleFactor ?? 2.0)
     }
@@ -134,8 +159,7 @@ struct DCToggleStyle: ToggleStyle {
             }
             .contentShape(Rectangle())
             .onTapGesture {
-                withAnimation(.spring(response: 0.35,
-                                       dampingFraction: 0.9)) {
+                withAnimation(DC.Motion.spring) {
                     configuration.isOn.toggle()
                 }
             }
@@ -167,6 +191,7 @@ struct DCTextFieldStyle: TextFieldStyle {
 /// Primary action — a near-white solid pill on the dark field. One per
 /// screen. Everything else uses the secondary glass variant.
 struct DCPrimaryButtonStyle: ButtonStyle {
+    @State private var hovering = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(DC.TypeScale.headline)
@@ -176,14 +201,21 @@ struct DCPrimaryButtonStyle: ButtonStyle {
             .background(
                 Capsule(style: .continuous)
                     .fill(DC.Ink.ink)
-                    .opacity(configuration.isPressed ? 0.82 : 1))
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.9),
+                    // Hover lifts the pill subtly; press settles it. The
+                    // two opacities never collide because isPressed wins.
+                    .opacity(configuration.isPressed ? 0.82
+                             : (hovering ? 0.94 : 1)))
+            .scaleEffect(configuration.isPressed ? 0.98
+                         : (hovering ? 1.015 : 1))
+            .animation(DC.Motion.springSnappy,
                        value: configuration.isPressed)
+            .animation(DC.Motion.hover, value: hovering)
+            .onHover { hovering = $0 }
     }
 }
 
 struct DCSecondaryButtonStyle: ButtonStyle {
+    @State private var hovering = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(DC.TypeScale.body)
@@ -192,12 +224,20 @@ struct DCSecondaryButtonStyle: ButtonStyle {
             .padding(.vertical, DC.Space.s)
             .background(
                 Capsule(style: .continuous)
-                    .fill(DC.Ink.surface)
+                    .fill(hovering ? DC.Ink.hairline : DC.Ink.surface)
                     .overlay(
                         Capsule(style: .continuous)
                             .strokeBorder(DC.Ink.hairline,
                                           lineWidth: DC.hairlineWidth))
                     .opacity(configuration.isPressed ? 0.72 : 1))
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            // Pre-tokens this had NO animation: the opacity flipped
+            // instantly between press states and the hover state didn't
+            // exist at all. Now both ride the unified spring/hover curve.
+            .animation(DC.Motion.springSnappy,
+                       value: configuration.isPressed)
+            .animation(DC.Motion.hover, value: hovering)
+            .onHover { hovering = $0 }
     }
 }
 

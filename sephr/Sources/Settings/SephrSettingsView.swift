@@ -51,7 +51,7 @@ enum SephrSettingsTab: String, CaseIterable, Hashable, Identifiable {
 
 /// Sephr's native settings screen — composed in the DIGITAL CAVIAR
 /// language: a monochrome value ramp and glass rows over a behind-window
-/// Liquid Glass field, with one gradient avatar as the only colour. The
+/// Liquid Glass field, with the chosen Memoji as the only colour. The
 /// tabs float in a real Liquid Glass capsule (`DCTabBar`). Replaces the
 /// Chromium `chrome://settings` page (and `chrome://extensions`) wholesale.
 struct SephrSettingsView: View {
@@ -86,17 +86,36 @@ struct SephrSettingsView: View {
                     VStack(alignment: .leading, spacing: DC.Space.xl) {
                         Color.clear.frame(height: DC.Space.s)
                         pane
+                            // Asymmetric pane transition: new pane rises
+                            // 6pt and fades in; old pane fades out flat.
+                            // Without this the cross-fade was crisp but
+                            // motionless — the eye never tracked the new
+                            // content arriving. Keyed by `selection` so
+                            // the .id flips identity on every tab change.
+                            .id(selection)
+                            .transition(
+                                .asymmetric(
+                                    insertion: .opacity
+                                        .combined(with: .offset(y: 6)),
+                                    removal: .opacity))
                         Color.clear.frame(height: DC.Space.huge)
                     }
                     .padding(.horizontal, DC.Space.margin)
                     .frame(maxWidth: 600, alignment: .leading)
                     .frame(maxWidth: .infinity)
+                    // Scope the pane crossfade to the pane itself.
+                    // Putting `.animation(value: selection)` on the
+                    // whole ZStack made it catch every descendant that
+                    // observed `selection` — including DCTabBar, whose
+                    // own spring on `selection = item.tab` got clipped
+                    // to this shorter easeInOut, and the entire titlebar
+                    // row, which had no business crossfading.
+                    .animation(reduceMotion ? nil : DC.Motion.easeOutPane,
+                               value: selection)
                 }
                 .scrollIndicators(.never)
             }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.16),
-                   value: selection)
     }
 
     @ViewBuilder
