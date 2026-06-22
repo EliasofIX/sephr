@@ -1,8 +1,7 @@
-# Sephr — 010-builtin-filter-lists
+# Sephr — 010-builtin-filter-lists (SUPERSEDED by 017-builtin-ublock-origin)
 #
-# Ships EasyList + EasyPrivacy + Peter Lowe's list as bundled resources and
-# wires them into a URLLoaderThrottle at the browser process edge. Filter
-# matching reuses Brave's adblock-rust crate (vendored).
+# This deferred patch used adblock-rust + EasyList. Sephr now ships the
+# actual uBlock Origin extension as a built-in component extension instead.
 
 --- /dev/null
 +++ b/sephr/filtering/BUILD.gn

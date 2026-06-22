@@ -2,20 +2,13 @@ import AppKit
 
 extension SephrSidebarView {
 
-    /// Smooth two-stage animation used when a user drags the sidebar past
-    /// the zero threshold: slide to 0 → detach → hide. Matches Arc's
-    /// feel of the sidebar "snapping away" into the window edge.
+    /// Called when the user drags the sidebar past the zero threshold.
+    /// The spring curve in `setWidth` is what gives the snap-into-edge
+    /// feel now — the previous fade-to-zero-then-snap trick was a
+    /// workaround for `easeInEaseOut` looking sluggish from a near-zero
+    /// starting width. With a snappy spring, a near-zero starting width
+    /// already lands in ~50ms perceptually, so the fade is unnecessary.
     func animateCollapseWithBounceBack() {
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.18
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            animator().alphaValue = 0
-        }, completionHandler: {
-            self.collapse(animated: false)
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.0
-                self.animator().alphaValue = 1
-            }
-        })
+        collapse(animated: true)
     }
 }

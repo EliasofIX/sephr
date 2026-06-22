@@ -15,6 +15,8 @@ struct SephrSpace: Codable, Identifiable, Equatable, Hashable {
     var useIsolatedProfile: Bool
     var backgroundImagePath: String?
     var createdAt: Date
+    /// Pinned to the sidebar footer switcher (max 4 across all spaces).
+    var isFavorited: Bool
 
     var color: NSColor {
         NSColor(hexString: colorHex) ?? .systemIndigo
@@ -44,7 +46,46 @@ struct SephrSpace: Codable, Identifiable, Equatable, Hashable {
             colorHex: "#7F8CFF",
             useIsolatedProfile: false,
             backgroundImagePath: nil,
-            createdAt: Date()
+            createdAt: Date(),
+            isFavorited: true
         )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, emoji, symbolName, colorHex, useIsolatedProfile
+        case backgroundImagePath, createdAt, isFavorited
+    }
+
+    init(id: UUID,
+         name: String,
+         emoji: String = "",
+         symbolName: String? = nil,
+         colorHex: String,
+         useIsolatedProfile: Bool,
+         backgroundImagePath: String?,
+         createdAt: Date,
+         isFavorited: Bool = false) {
+        self.id = id
+        self.name = name
+        self.emoji = emoji
+        self.symbolName = symbolName
+        self.colorHex = colorHex
+        self.useIsolatedProfile = useIsolatedProfile
+        self.backgroundImagePath = backgroundImagePath
+        self.createdAt = createdAt
+        self.isFavorited = isFavorited
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        emoji = try c.decode(String.self, forKey: .emoji)
+        symbolName = try c.decodeIfPresent(String.self, forKey: .symbolName)
+        colorHex = try c.decode(String.self, forKey: .colorHex)
+        useIsolatedProfile = try c.decode(Bool.self, forKey: .useIsolatedProfile)
+        backgroundImagePath = try c.decodeIfPresent(String.self, forKey: .backgroundImagePath)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        isFavorited = try c.decodeIfPresent(Bool.self, forKey: .isFavorited) ?? false
     }
 }

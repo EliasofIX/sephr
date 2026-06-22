@@ -18,6 +18,8 @@ static inline NSString* CAL_ExtStr(const char* s) {
     NSString* _profileID;
     SephriumProfileRef _profile;
     NSMutableArray<CALExtension*>* _extensions;
+    NSMutableDictionary<NSNumber*, void (^)(void)>* _observers;
+    NSInteger _nextToken;
 }
 
 static NSMutableDictionary<NSString*, CALExtensions*>* sInstances;
@@ -36,6 +38,7 @@ static dispatch_once_t sInstancesOnce;
         e = [[CALExtensions alloc] init];
         e->_profileID  = [profileID copy];
         e->_extensions = [NSMutableArray array];
+        e->_observers  = [NSMutableDictionary dictionary];
         CALProfile* prof = [CALProfile profileWithID:profileID];
         e->_profile = (SephriumProfileRef)prof.bridgeHandle;
         sInstances[profileID] = e;
@@ -63,11 +66,14 @@ static void ExtensionsTrampoline(void* ctx,
         [snap addObject:x];
     }
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSArray<void (^)(void)>* blocks;
         @synchronized (self_) {
             [self_->_extensions removeAllObjects];
             if (snap.count) [self_->_extensions addObjectsFromArray:snap];
+            blocks = self_->_observers.allValues;  // snapshot under lock
         }
-        if (self_.onExtensionsChanged) self_.onExtensionsChanged();
+        // Fire every registered observer (not just the last assigned one).
+        for (void (^block)(void) in blocks) block();
     });
 }
 
@@ -87,6 +93,24 @@ static void ExtensionsTrampoline(void* ctx,
 - (NSArray<CALExtension*>*)installed {
     [self subscribeIfNeeded];
     @synchronized (self) { return [_extensions copy]; }
+}
+
+- (id)addChangeObserver:(void (^)(void))block {
+    if (!block) return @(-1);
+    // Reading -installed lazily subscribes; make sure registering an observer
+    // also kicks the subscription so the very first snapshot is delivered.
+    [self subscribeIfNeeded];
+    NSNumber* token;
+    @synchronized (self) {
+        token = @(++_nextToken);
+        _observers[token] = [block copy];
+    }
+    return token;
+}
+
+- (void)removeChangeObserver:(id)token {
+    if (![token isKindOfClass:[NSNumber class]]) return;
+    @synchronized (self) { [_observers removeObjectForKey:(NSNumber*)token]; }
 }
 
 - (BOOL)installCRXAtPath:(NSString*)path error:(NSError**)error {

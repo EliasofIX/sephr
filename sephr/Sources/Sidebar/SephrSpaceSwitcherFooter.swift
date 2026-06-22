@@ -38,7 +38,7 @@ final class SephrSpaceSwitcherFooter: NSView {
     @MainActor @objc private func rebuild() {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let current = SephrSpaceManager.shared.currentSpace
-        for space in SephrSpaceManager.shared.spaces {
+        for space in SephrSpaceManager.shared.footerSpaces() {
             let pip = SephrSpacePip(
                 space: space, isActive: space.id == current.id)
             pip.onClick = { [weak self] in self?.onSelect?(space) }
@@ -61,12 +61,15 @@ private final class SephrSpacePip: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = DC.Radius.standard
         toolTip = space.name
 
         icon.image = NSImage(systemSymbolName: space.resolvedSymbol,
                               accessibilityDescription: space.name)
-        icon.symbolConfiguration = .init(pointSize: 12, weight: .medium)
+        icon.symbolConfiguration = .init(
+            pointSize: SephrSidebarFooterMetrics.symbolPointSize,
+            weight: .medium)
+        icon.imageScaling = .scaleProportionallyUpOrDown
         icon.translatesAutoresizingMaskIntoConstraints = false
         addSubview(icon)
 
@@ -77,12 +80,18 @@ private final class SephrSpacePip: NSView {
         addSubview(dot)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 28),
-            heightAnchor.constraint(equalToConstant: 28),
+            widthAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.controlSize),
+            heightAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.controlSize),
             icon.centerXAnchor.constraint(equalTo: centerXAnchor),
-            // Push the icon up a hair to make room for the active pip.
             icon.centerYAnchor.constraint(
-                equalTo: centerYAnchor, constant: -3),
+                equalTo: centerYAnchor,
+                constant: SephrSidebarFooterMetrics.iconCenterYOffset),
+            icon.widthAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.iconBoxSize),
+            icon.heightAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.iconBoxSize),
             dot.widthAnchor.constraint(equalToConstant: 4),
             dot.heightAnchor.constraint(equalToConstant: 4),
             dot.centerXAnchor.constraint(equalTo: centerXAnchor),

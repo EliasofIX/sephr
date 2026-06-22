@@ -24,7 +24,7 @@ final class SephrSpaceColumnView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 14
+        layer?.cornerRadius = DC.Radius.standard
         layer?.masksToBounds = true
         refreshBackground(highlighted: false)
 
@@ -237,6 +237,14 @@ final class SephrSpaceColumnView: NSView {
                               action: #selector(presentEditor), keyEquivalent: "")
         edit.target = self
         menu.addItem(edit)
+        let favTitle = space.isFavorited
+            ? "Remove from Sidebar Footer"
+            : "Add to Sidebar Footer"
+        let fav = NSMenuItem(title: favTitle,
+                             action: #selector(toggleFavorite), keyEquivalent: "")
+        fav.target = self
+        fav.state = space.isFavorited ? .on : .off
+        menu.addItem(fav)
         let delete = NSMenuItem(title: "Delete Space",
                                 action: #selector(deleteSpace), keyEquivalent: "")
         delete.target = self
@@ -250,6 +258,10 @@ final class SephrSpaceColumnView: NSView {
     @objc private func deleteSpace() {
         guard SephrSpaceManager.shared.spaces.count > 1 else { return }
         SephrSpaceManager.shared.deleteSpace(space)
+    }
+
+    @objc private func toggleFavorite() {
+        SephrSpaceManager.shared.toggleFavorite(space)
     }
 
     // MARK: — Drop target

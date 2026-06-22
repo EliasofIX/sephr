@@ -5,6 +5,7 @@ protocol SephrSidebarViewDelegate: AnyObject {
     func sidebarDidSelectTab(_ tab: SephrTab)
     func sidebarDidSelectSplit(primary: SephrTab, secondary: SephrTab)
     func sidebarDidRequestNewTab()
+    func sidebarDidRequestNewNote()
     func sidebarDidRequestCommandBar()
     func sidebarDidRequestNewFolder()
     func sidebarDidRequestNewSpace()
@@ -20,9 +21,33 @@ final class SephrSidebarToggleButton: SephrHoverButton {
         image = NSImage(systemSymbolName: "sidebar.left",
                         accessibilityDescription: nil)
         symbolConfiguration = .init(pointSize: 13, weight: .medium)
-        contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
+        // Dynamic `secondaryLabelColor` for the muted-control look — a baked
+        // `labelColor.withAlphaComponent(0.7)` flattened against the light
+        // base appearance and rendered dark-on-dark in dark mode.
+        contentTintColor = NSColor.secondaryLabelColor
     }
     required init?(coder: NSCoder) { fatalError() }
+}
+
+/// Scroll view backing the sidebar's tab list. A vanilla NSScrollView
+/// swallows every `scrollWheel:` it receives — including the
+/// horizontal-dominant 2-finger trackpad swipes it has no use for (the
+/// list only scrolls vertically). That stole the space-switch swipe
+/// gesture from `SephrSidebarView` whenever the pointer sat over the tab
+/// list, which is most of the sidebar — so the gesture felt broken. This
+/// subclass hands those horizontal swipes up the responder chain to the
+/// enclosing sidebar's `scrollWheel(with:)` and keeps vertical / mouse
+/// scrolls for itself.
+final class SephrSidebarSwipeScrollView: NSScrollView {
+    override func scrollWheel(with event: NSEvent) {
+        let dx = event.scrollingDeltaX
+        let dy = event.scrollingDeltaY
+        if event.hasPreciseScrollingDeltas, abs(dx) > abs(dy) * 1.5 {
+            nextResponder?.scrollWheel(with: event)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
 }
 
 final class SephrSidebarView: NSView {
@@ -34,7 +59,11 @@ final class SephrSidebarView: NSView {
     let urlField              = SephrSidebarURLField()
     private let favoritesRow  = SephrFavoritesRow()
     private var spaceHeader:  SephrSpaceHeader!
-    private let tabScrollView = NSScrollView()
+    private let tabScrollView = SephrSidebarSwipeScrollView()
+    /// Zen-style Now Playing pill between the tab list and the footer.
+    /// Self-managing: zero-height while nothing plays, so the tab list
+    /// reclaims the space.
+    private let nowPlaying    = SephrNowPlayingPill()
     private let tabStackView  = NSStackView()
     private let footer        = SephrSidebarFooter()
 
@@ -51,22 +80,31 @@ final class SephrSidebarView: NSView {
     /// Last rendered structure key — IDs + flags that decide which
     /// cells exist and in what order. The bus's structure channel still
     /// fires for changes that don't affect THIS space's layout (e.g.
-    /// pin reorder, folder rename, activation's parallel-run emit), so
-    /// without this guard `renderTabs()` would tear down and rebuild
-    /// every cell needlessly. Cells subscribe per-tab themselves to
-    /// refresh state (title / favicon / active) in place.
-    private var lastStructureKey: String = ""
+    /// pin reorder, folder rename), so without this guard `renderTabs()`
+    /// would tear down and rebuild every cell needlessly. Cells subscribe
+    /// per-tab themselves to refresh state (title / favicon / active) in
+    /// place. Folded into a single hashed Int with Hasher — used to be
+    /// a ~5KB string concatenated via += in a loop, which allocated
+    /// + copied on every structural event.
+    private var lastStructureKey: Int = 0
+    private var hasRendered = false
 
     /// Structure-channel subscription driving `renderTabs()`. Dropping
     /// the token unsubscribes, so it lives for the view's lifetime.
     private var structureToken: TabEventToken?
 
-    /// Accumulator for 2-finger horizontal trackpad swipes. Once it
-    /// crosses `swipeThreshold` the sidebar switches to the next /
-    /// previous space and the accumulator resets. Reset on every
-    /// non-changed phase so each gesture is one switch max.
+    /// Accumulator for 2-finger horizontal trackpad swipes. We commit a
+    /// space switch when the accumulator crosses `swipeThreshold` OR a
+    /// single frame's `dx` exceeds `velocityCommitDelta` (a quick flick),
+    /// then reset to zero so one sustained swipe can hop several spaces.
+    /// `lastSwipeCommitTimestamp` enforces a small cooldown so a single
+    /// hardware burst can't race past the user's target space.
     private var swipeAccum: CGFloat = 0
-    private static let swipeThreshold: CGFloat = 90
+    private var lastSwipeCommitTimestamp: TimeInterval = 0
+    private static let swipeThreshold: CGFloat = 48
+    private static let velocityCommitDelta: CGFloat = 18
+    private static let swipeCommitCooldown: TimeInterval = 0.18
+    private static let swipeHaptic = NSHapticFeedbackManager.defaultPerformer
 
     /// True while the pointer is anywhere inside the sidebar — drives the
     /// reveal of the URL bar's trailing copy / settings buttons. Works
@@ -92,6 +130,21 @@ final class SephrSidebarView: NSView {
     static let fullWidth: CGFloat = 240
     static let compactWidth: CGFloat = 52
     static let collapsedWidth: CGFloat = 0
+
+    /// The user's preferred *expanded* width, read from preferences. This
+    /// is what collapse/compact transitions restore to — never the
+    /// hardcoded `fullWidth`, or a custom resize wouldn't survive a
+    /// Cmd+S or Cmd+\ round-trip. It changes only when the user drags the
+    /// resizer (`SephrWindowController`'s `grip.onDragEnded`); mode
+    /// transitions must not overwrite it. Older builds did leak the
+    /// transient mode widths (0 collapsed, 52 compact) into this
+    /// preference, so reject anything at or below the compact width and
+    /// fall back to the design default rather than pin the sidebar open
+    /// at a broken size — this also self-heals any already-corrupted pref.
+    static var preferredFullWidth: CGFloat {
+        let stored = SephrPreferences.sidebarWidth
+        return stored > compactWidth ? stored : fullWidth
+    }
 
     /// CenterY constraints for the title-bar chrome strip — exposed so
     /// the window controller can pin them to the live traffic-light
@@ -157,7 +210,7 @@ final class SephrSidebarView: NSView {
         }
 
         [toggleButton, navStrip, urlField, favoritesRow,
-         spaceHeader, tabScrollView, footer].forEach {
+         spaceHeader, tabScrollView, nowPlaying, footer].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             addSubview($0)
         }
@@ -194,6 +247,7 @@ final class SephrSidebarView: NSView {
         tabScrollView.hasVerticalScroller = true
         tabScrollView.scrollerStyle = .overlay
         tabScrollView.drawsBackground = false
+        tabScrollView.contentView.postsBoundsChangedNotifications = true
 
         tabStackView.orientation = .vertical
         tabStackView.alignment = .leading
@@ -248,24 +302,22 @@ final class SephrSidebarView: NSView {
             // strip view itself has no leading constraint so AppKit
             // would otherwise collapse it to 0pt and render the buttons
             // outside the strip's bounds.
-            // Nav strip's trailing matches the URL field's trailing (-12)
+            // Nav strip's trailing matches the URL field's trailing (-10)
             // so the right-side inset mirrors the URL field's leading
-            // inset (+12) — the title row reads symmetric across the
+            // inset (+10) — the title row reads symmetric across the
             // sidebar regardless of live width.
             navStrip.trailingAnchor.constraint(
                 equalTo: trailingAnchor,
-                constant: isOverlay ? -16 : -12),
+                constant: isOverlay ? -16 : -10),
             navStrip.widthAnchor.constraint(equalToConstant: 90),
             navStrip.heightAnchor.constraint(equalToConstant: 22),
 
             urlField.topAnchor.constraint(
                 equalTo: topAnchor, constant: 38),
             urlField.leadingAnchor.constraint(
-                equalTo: leadingAnchor,
-                constant: isOverlay ? 16 : 12),
+                equalTo: leadingAnchor, constant: 10),
             urlField.trailingAnchor.constraint(
-                equalTo: trailingAnchor,
-                constant: isOverlay ? -16 : -12),
+                equalTo: trailingAnchor, constant: -10),
             urlField.heightAnchor.constraint(equalToConstant: 30),
 
             // Cross-space favorites sit at the top — pinned tabs are
@@ -293,7 +345,12 @@ final class SephrSidebarView: NSView {
                 equalTo: spaceHeader.bottomAnchor, constant: 6),
             tabScrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
             tabScrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            tabScrollView.bottomAnchor.constraint(equalTo: footer.topAnchor),
+            tabScrollView.bottomAnchor.constraint(
+                equalTo: nowPlaying.topAnchor),
+
+            nowPlaying.leadingAnchor.constraint(equalTo: leadingAnchor),
+            nowPlaying.trailingAnchor.constraint(equalTo: trailingAnchor),
+            nowPlaying.bottomAnchor.constraint(equalTo: footer.topAnchor),
 
             footer.leadingAnchor.constraint(equalTo: leadingAnchor),
             footer.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -308,6 +365,9 @@ final class SephrSidebarView: NSView {
         // through the command bar.
         footer.onCreateTab = { [weak self] in
             self?.delegate?.sidebarDidRequestCommandBar()
+        }
+        footer.onCreateNote = { [weak self] in
+            self?.delegate?.sidebarDidRequestNewNote()
         }
         footer.onCreateFolder = { [weak self] in
             self?.delegate?.sidebarDidRequestNewFolder()
@@ -351,7 +411,7 @@ final class SephrSidebarView: NSView {
             SephrPreferences.sidebarCompact = false
             updateCompactAppearance()
         }
-        setWidth(Self.fullWidth, animated: animated)
+        setWidth(Self.preferredFullWidth, animated: animated)
     }
 
     @objc func toggleCollapse() { isCollapsed ? expand() : collapse() }
@@ -364,7 +424,7 @@ final class SephrSidebarView: NSView {
     @objc func toggleCompactMode() {
         isCompact.toggle()
         SephrPreferences.sidebarCompact = isCompact
-        setWidth(isCompact ? Self.compactWidth : Self.fullWidth, animated: true)
+        setWidth(isCompact ? Self.compactWidth : Self.preferredFullWidth, animated: true)
         updateCompactAppearance()
     }
 
@@ -373,6 +433,7 @@ final class SephrSidebarView: NSView {
         for v in tabStackView.arrangedSubviews {
             (v as? SephrTabCell)?.setCompact(isCompact)
             (v as? SephrFolderCell)?.setCompact(isCompact)
+            (v as? SephrNewTabRow)?.setCompact(isCompact)
         }
     }
 
@@ -381,10 +442,10 @@ final class SephrSidebarView: NSView {
             self.widthConstraint?.constant = width
             self.superview?.layoutSubtreeIfNeeded()
         }
-        if animated {
+        if animated && !SephrSidebarMotion.reduceMotion {
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.2
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                ctx.duration = SephrSidebarMotion.snappyDuration
+                ctx.timingFunction = SephrSidebarMotion.snappyCurve
                 block()
             }
         } else { block() }
@@ -420,28 +481,31 @@ final class SephrSidebarView: NSView {
         // re-reads its children only on init: a tab move between two
         // folders neither of which is top-level otherwise leaves the old
         // folder cell rendering the moved-out tab.
-        var key = "\(foldersCollapsed ? "F" : "f")|\(isCompact ? "C" : "c")|"
+        var hasher = Hasher()
+        hasher.combine(space.id)
+        hasher.combine(foldersCollapsed)
+        hasher.combine(isCompact)
         if !foldersCollapsed {
-            for f in folders {
-                key += "F:\(f.id.uuidString);"
-            }
+            for f in folders { hasher.combine(f.id) }
         }
-        for t in topLevelTabs {
-            key += "T:\(t.id.uuidString);"
-        }
+        for t in topLevelTabs { hasher.combine(t.id) }
         for t in SephrTabModel.shared.allTabs where t.spaceID == space.id {
             if let fid = t.folderID {
-                key += "M:\(t.id.uuidString)>\(fid.uuidString);"
+                hasher.combine(t.id)
+                hasher.combine(fid)
             }
         }
         // The split group decides whether two cells collapse into one
         // combined pill, so it's part of the structure key.
         if let p = SephrSplitManager.shared.primaryID,
            let s = SephrSplitManager.shared.secondaryID {
-            key += "SPLIT:\(p.uuidString)>\(s.uuidString);"
+            hasher.combine(p)
+            hasher.combine(s)
         }
-        if key == lastStructureKey { return }
+        let key = hasher.finalize()
+        if hasRendered && key == lastStructureKey { return }
         lastStructureKey = key
+        hasRendered = true
 
         tabStackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
@@ -473,19 +537,40 @@ final class SephrSidebarView: NSView {
             }
         }
 
+        // Arc-style "New Tab" action row heads the tab section — below the
+        // folder block / divider, but the first entry of the actual tab
+        // list. Routes through the same command-bar path as the footer's
+        // "+ → New Tab" so the user lands on a URL / search prompt.
+        let newTabRow = SephrNewTabRow()
+        newTabRow.setCompact(isCompact)
+        newTabRow.onClick = { [weak self] in
+            self?.delegate?.sidebarDidRequestCommandBar()
+        }
+        tabStackView.addArrangedSubview(newTabRow)
+
         // Tabs that belong to the active split group collapse into a single
         // combined pill (Zen-style), rendered at the position of whichever
         // member appears first. `rendered` tracks what's already been placed
         // so the second member is skipped.
         let split = SephrSplitManager.shared
+        // Resolve the split members once before the loop — these don't
+        // change between iterations, but the prior code re-scanned
+        // `topLevelTabs` twice per pass.
+        let splitPID = split.primaryID
+        let splitSID = split.secondaryID
+        let splitPrimary: SephrTab? = splitPID.flatMap { id in
+            topLevelTabs.first(where: { $0.id == id })
+        }
+        let splitSecondary: SephrTab? = splitSID.flatMap { id in
+            topLevelTabs.first(where: { $0.id == id })
+        }
         var rendered = Set<UUID>()
         for tab in topLevelTabs {
             if rendered.contains(tab.id) { continue }
 
             if split.contains(tab.id),
-               let pid = split.primaryID, let sid = split.secondaryID,
-               let p = topLevelTabs.first(where: { $0.id == pid }),
-               let s = topLevelTabs.first(where: { $0.id == sid }) {
+               let pid = splitPID, let sid = splitSID,
+               let p = splitPrimary, let s = splitSecondary {
                 let pill = SephrSplitTabCell(primary: p, secondary: s)
                 pill.onSelect = { [weak self] in
                     self?.delegate?.sidebarDidSelectSplit(primary: p, secondary: s)
@@ -608,22 +693,46 @@ final class SephrSidebarView: NSView {
         else { super.scrollWheel(with: event); return }
 
         switch event.phase {
-        case .began, .mayBegin: swipeAccum = 0
-        case .changed:          swipeAccum += dx
+        case .began, .mayBegin:
+            swipeAccum = 0
+        case .changed:
+            swipeAccum += dx
+            // Commit when accumulated travel crosses the threshold OR a
+            // single frame's delta is a fast flick. Reset and re-arm so a
+            // long, fast swipe can hop several spaces in one motion.
+            let pastThreshold = abs(swipeAccum) >= Self.swipeThreshold
+            let fastFlick = abs(dx) >= Self.velocityCommitDelta
+            guard pastThreshold || fastFlick else { return }
+            let elapsed = event.timestamp - lastSwipeCommitTimestamp
+            guard elapsed >= Self.swipeCommitCooldown else { return }
+            let direction = swipeAccum > 0 ? -1 : 1   // swipe right → prev
+            commitSpaceSwipe(direction: direction, at: event.timestamp)
         case .ended, .cancelled:
-            commitSwipeIfPastThreshold(); swipeAccum = 0
-        default: break
+            swipeAccum = 0
+        default:
+            break
         }
+        // Momentum frames carry `phase == []` so they never enter the
+        // commit path above; just keep the accumulator clean.
         if event.momentumPhase == .ended { swipeAccum = 0 }
-        // Commit mid-gesture too — feels snappier than waiting for
-        // the user to lift their fingers.
-        commitSwipeIfPastThreshold()
     }
 
-    private func commitSwipeIfPastThreshold() {
-        guard abs(swipeAccum) >= Self.swipeThreshold else { return }
-        let direction = swipeAccum > 0 ? -1 : 1   // swipe right → prev
+    private func commitSpaceSwipe(direction: Int, at timestamp: TimeInterval) {
+        lastSwipeCommitTimestamp = timestamp
         swipeAccum = 0
+        // Push-transition the tab list in the swipe direction so the
+        // gesture has visible follow-through instead of a hard cut. The
+        // transition is installed before the switch so the rebuild
+        // triggered by `.sephrSpaceChanged → renderTabs()` is captured.
+        if let layer = tabScrollView.layer {
+            let push = CATransition()
+            push.type = .push
+            push.subtype = direction > 0 ? .fromRight : .fromLeft
+            push.duration = 0.22
+            push.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            layer.add(push, forKey: "spaceSwipePush")
+        }
+        Self.swipeHaptic.perform(.alignment, performanceTime: .now)
         MainActor.assumeIsolated {
             SephrSpaceManager.shared.switchByOffset(direction)
         }
@@ -638,6 +747,60 @@ final class SephrSidebarView: NSView {
         NotificationCenter.default.addObserver(
             self, selector: #selector(onSpaceChanged),
             name: .sephrSpaceChanged, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(onTabListScrolled),
+            name: NSView.boundsDidChangeNotification,
+            object: tabScrollView.contentView)
+    }
+
+    /// Scroll moves tab rows under a stationary pointer. AppKit's
+    /// mouseEntered/Exited tracking doesn't fully keep up, so stale
+    /// hovers can stack on multiple cells — clear them and re-apply
+    /// hover only to the row actually under the cursor.
+    @objc private func onTabListScrolled() {
+        syncTabListHoverUnderPointer()
+    }
+
+    private func syncTabListHoverUnderPointer() {
+        forEachHoverableTabRow { view in
+            if let cell = view as? SephrTabCell { cell.clearHoverState() }
+            else if let row = view as? SephrNewTabRow { row.clearHoverState() }
+        }
+
+        guard let window, let doc = tabScrollView.documentView else { return }
+        let mouseInWindow = window.mouseLocationOutsideOfEventStream
+        let mouseInClip = tabScrollView.contentView.convert(
+            mouseInWindow, from: nil)
+        guard tabScrollView.contentView.bounds.contains(mouseInClip) else {
+            return
+        }
+
+        let pointInDoc = doc.convert(mouseInWindow, from: nil)
+        guard let hit = doc.hitTest(pointInDoc) else { return }
+
+        var view: NSView? = hit
+        while let current = view {
+            if let cell = current as? SephrTabCell {
+                cell.syncHoverUnderPointer(allowPeek: false)
+                return
+            }
+            if let row = current as? SephrNewTabRow {
+                row.syncHoverUnderPointer()
+                return
+            }
+            view = current.superview
+        }
+    }
+
+    private func forEachHoverableTabRow(_ body: (NSView) -> Void) {
+        func walk(_ view: NSView) {
+            if view is SephrTabCell || view is SephrNewTabRow {
+                body(view)
+                return
+            }
+            view.subviews.forEach { walk($0) }
+        }
+        tabStackView.arrangedSubviews.forEach { walk($0) }
     }
 
     @objc private func onSpaceChanged() { renderAll() }
@@ -659,6 +822,9 @@ final class SephrSidebarView: NSView {
         menu.addItem(withTitle: "New Tab",
                      action: #selector(emptyMenuNewTab),
                      keyEquivalent: "t")
+        menu.addItem(withTitle: "New Note",
+                     action: #selector(emptyMenuNewNote),
+                     keyEquivalent: "")
         menu.addItem(withTitle: "New Space",
                      action: #selector(emptyMenuNewSpace),
                      keyEquivalent: "")
@@ -686,6 +852,9 @@ final class SephrSidebarView: NSView {
     @objc private func emptyMenuNewTab() {
         delegate?.sidebarDidRequestCommandBar()
     }
+    @objc private func emptyMenuNewNote() {
+        delegate?.sidebarDidRequestNewNote()
+    }
     @objc private func emptyMenuNewSpace() {
         delegate?.sidebarDidRequestNewSpace()
     }
@@ -700,6 +869,15 @@ extension SephrSidebarView: SephrTabCellDelegate {
     }
     func tabCellDidPin(_ cell: SephrTabCell) {
         SephrTabModel.shared.pinTab(cell.tab, pinned: !cell.tab.isPinned)
+    }
+    func tabCellDidDuplicate(_ cell: SephrTabCell) {
+        SephrTabModel.shared.duplicateTab(cell.tab)
+    }
+    func tabCellDidCloseOthers(_ cell: SephrTabCell) {
+        SephrTabModel.shared.closeOtherTabs(keeping: cell.tab)
+    }
+    func tabCellDidCloseToRight(_ cell: SephrTabCell) {
+        SephrTabModel.shared.closeTabsBelow(cell.tab)
     }
 }
 
@@ -763,8 +941,7 @@ final class SephrSidebarFlippedClip: NSView {
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         guard let id = SephrTabPasteboard.tabID(
                 from: sender.draggingPasteboard),
-              let tab = SephrTabModel.shared.allTabs
-                .first(where: { $0.id == id })
+              let tab = SephrTabModel.shared.tab(withID: id)
         else { return false }
         let space = SephrSpaceManager.shared.currentSpace
         let localY = convert(sender.draggingLocation, from: nil).y

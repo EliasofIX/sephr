@@ -6,7 +6,13 @@ import CAL
 final class SephrCommandBarViewModel: ObservableObject {
 
     @Published var results: [SephrSearchResult] = []
-    @Published var query: String = ""
+    /// Plain stored property — the View already drives its `@State` copy
+    /// of the query and never reads this one. Marking it `@Published`
+    /// fired a second objectWillChange per keystroke on top of the View's
+    /// own @State publish, doubling the body recompute work the user paid
+    /// for at every character. The VM still keeps the latest query
+    /// in-band so `activateFirst` can read it.
+    var query: String = ""
 
     private let omnibox: CALOmnibox
     private weak var targetWindowController: SephrWindowController?
@@ -82,17 +88,22 @@ final class SephrCommandBarViewModel: ObservableObject {
                              favicon: r.favicon))
         }
         // Prepend open-tab matches (local model; free, no async).
+        // Collect into a separate array and concatenate — the previous
+        // `out.insert(at: 0)` per match was O(n²) on the running array
+        // (every insert shifted every prior element) AND reversed the
+        // visible order so power-users saw their most recent tab last.
         let space = SephrSpaceManager.shared.currentSpace
+        var tabMatches: [SephrSearchResult] = []
         for t in SephrTabModel.shared.tabs(in: space)
             where t.title.localizedCaseInsensitiveContains(text)
                || t.url.localizedCaseInsensitiveContains(text) {
-            out.insert(.init(kind: .tab,
-                             title: t.title.isEmpty ? t.url : t.title,
-                             subtitle: t.url,
-                             url: t.url,
-                             favicon: nil), at: 0)
+            tabMatches.append(.init(kind: .tab,
+                                    title: t.title.isEmpty ? t.url : t.title,
+                                    subtitle: t.url,
+                                    url: t.url,
+                                    favicon: nil))
         }
-        results = out
+        results = tabMatches + out
     }
 
     func activateFirst() {

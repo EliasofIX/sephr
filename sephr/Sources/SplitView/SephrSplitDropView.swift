@@ -106,7 +106,7 @@ final class SephrSplitDropView: NSView {
         v.layer?.borderColor =
             NSColor.controlAccentColor.withAlphaComponent(0.85).cgColor
         v.layer?.borderWidth = 2
-        v.layer?.cornerRadius = 8
+        v.layer?.cornerRadius = DC.Radius.standard
         // Top-most so it reads over the opaque web page beneath it.
         addSubview(v)
         highlight = v

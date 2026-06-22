@@ -60,9 +60,9 @@ struct MiniPlayerView: View {
             if let art = model.session?.artwork {
                 Image(nsImage: art).resizable()
                     .frame(width: 44, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: DC.Radius.standard))
             } else {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: DC.Radius.standard)
                     .fill(.white.opacity(0.1))
                     .frame(width: 44, height: 44)
                     .overlay(Image(systemName: "music.note")
@@ -100,8 +100,10 @@ struct MiniPlayerView: View {
         .padding(.horizontal, 12)
         .frame(height: 68)
         .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .clipShape(RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                    style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                  style: .continuous)
             .stroke(.white.opacity(0.08), lineWidth: 1))
         .shadow(color: .black.opacity(0.3), radius: 20, y: 4)
     }

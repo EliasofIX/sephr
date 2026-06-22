@@ -80,7 +80,7 @@ private final class SephrSpacePill: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 10
+        layer?.cornerRadius = DC.Radius.standard
         refreshAppearance()
 
         label.stringValue = compact ? space.emoji : "\(space.emoji) \(space.name)"

@@ -1,5 +1,6 @@
 import WebKit
 import Observation
+import UIKit
 
 /// Coordinates the tab store, the web view pool, and per-page navigation
 /// state for the chrome (progress bar, back/forward, secure indicator).
@@ -11,6 +12,24 @@ final class BrowserEngine: NSObject {
     let pool = WebViewPool()
     let history = HistoryStore()
 
+    /// On-device LFM2-VL-450M runtime — shared by SuperBrowse and
+    /// Summarize. Lazily warms on the first feature invocation.
+    let model = ModelManager()
+
+    @ObservationIgnored
+    private(set) lazy var superBrowseEngine = SuperBrowseEngine(model: model)
+
+    @ObservationIgnored
+    private(set) lazy var summarizeEngine = SummarizeEngine(model: model)
+
+    /// When non-nil, the SuperBrowse hero / result view is mounted over
+    /// the browser. `BrowserShell` observes this and shows the overlay.
+    var superBrowseSession: SuperBrowseSession?
+
+    /// Same idea for Summarize. Mutually exclusive with the above —
+    /// starting one cancels the other.
+    var summarizeSession: SummarizeSession?
+
     // Live state of the *active* tab's web view, mirrored for SwiftUI.
     private(set) var estimatedProgress: Double = 1
     private(set) var isLoading = false
@@ -18,6 +37,12 @@ final class BrowserEngine: NSObject {
     private(set) var canGoForward = false
     private(set) var currentURL: URL?
     private(set) var hasSecureContent = true
+
+    /// Auto-collapse state for the bottom bar: scrolling down on the page
+    /// hides the chrome so the content can breathe; scrolling back up (or
+    /// reaching the top, or navigating) brings it back. The BottomBar also
+    /// writes this directly when the user pulls it down or up by hand.
+    var isBarCollapsed = false
 
     /// Set when a page wants to open a new window (target=_blank) — the
     /// UI responds by opening it as a fresh tab.
@@ -28,9 +53,12 @@ final class BrowserEngine: NSObject {
 
     private var observations: [NSKeyValueObservation] = []
     private var observedView: WKWebView?
+    private var lastScrollY: CGFloat = 0
+    private var scrollAccum: CGFloat = 0
 
     override init() {
         super.init()
+        syncActiveWebView()
         Task { [pool] in
             if let list = await ContentBlocker.ruleList() {
                 pool.install(ruleList: list)
@@ -53,6 +81,12 @@ final class BrowserEngine: NSObject {
 
     // MARK: — Active web view
 
+    /// Wire delegates and KVO for the active tab. Call from lifecycle
+    /// hooks — never from SwiftUI `body` (mutates observable state).
+    func syncActiveWebView() {
+        _ = activeWebView
+    }
+
     /// The active tab's live web view, creating (and lazily loading) it if
     /// needed. Returns nil when there is no active tab (deck is empty).
     var activeWebView: WKWebView? {
@@ -72,10 +106,12 @@ final class BrowserEngine: NSObject {
         guard view !== observedView else { return }
         observations = []
         observedView = view
+        scrollAccum = 0
         guard let view else {
             estimatedProgress = 1; isLoading = false
             canGoBack = false; canGoForward = false
             currentURL = nil
+            isBarCollapsed = false
             return
         }
         currentURL = view.url
@@ -83,6 +119,9 @@ final class BrowserEngine: NSObject {
         estimatedProgress = view.isLoading ? view.estimatedProgress : 1
         canGoBack = view.canGoBack
         canGoForward = view.canGoForward
+        lastScrollY = view.scrollView.contentOffset.y
+        // New tab → fresh chrome.
+        isBarCollapsed = false
 
         observations = [
             view.observe(\.estimatedProgress) { [weak self] v, _ in
@@ -115,7 +154,48 @@ final class BrowserEngine: NSObject {
             view.observe(\.hasOnlySecureContent) { [weak self] v, _ in
                 MainActor.assumeIsolated { self?.hasSecureContent = v.hasOnlySecureContent }
             },
+            view.scrollView.observe(\.contentOffset, options: [.new]) {
+                [weak self] sv, _ in
+                MainActor.assumeIsolated { self?.handleWebScroll(sv) }
+            },
         ]
+    }
+
+    /// Translate web-view scrolling into bottom-bar collapse state. Drag
+    /// past the top of the page or scroll-up over the threshold expands
+    /// the chrome; scroll-down over the threshold collapses it. Pages
+    /// shorter than the viewport stay expanded.
+    private func handleWebScroll(_ scrollView: UIScrollView) {
+        let y = scrollView.contentOffset.y
+        let dy = y - lastScrollY
+        lastScrollY = y
+
+        // Within the rubber-band region at the top: always show the bar.
+        if y <= 8 {
+            scrollAccum = 0
+            if isBarCollapsed { isBarCollapsed = false }
+            return
+        }
+        // Page not actually scrollable (or hasn't laid out yet): leave the
+        // bar alone — there's nothing to collapse for.
+        if scrollView.contentSize.height <= scrollView.bounds.height + 8 {
+            scrollAccum = 0
+            if isBarCollapsed { isBarCollapsed = false }
+            return
+        }
+        // Reverse direction → restart the accumulator so a small bounce
+        // back the other way doesn't immediately flip the bar.
+        if (dy > 0) != (scrollAccum > 0) { scrollAccum = 0 }
+        scrollAccum += dy
+
+        let threshold: CGFloat = 60
+        if scrollAccum > threshold {
+            if !isBarCollapsed { isBarCollapsed = true }
+            scrollAccum = 0
+        } else if scrollAccum < -threshold {
+            if isBarCollapsed { isBarCollapsed = false }
+            scrollAccum = 0
+        }
     }
 
     // MARK: — Commands
@@ -138,9 +218,17 @@ final class BrowserEngine: NSObject {
         _ = activeWebView   // re-attach KVO
     }
 
-    /// New tab + immediately load.
+    /// New tab + immediately load. Reuses the active tab when it's still
+    /// blank so dismiss-without-typing doesn't leave a pile of empties.
     func openInNewTab(_ url: URL, incognito: Bool = false) {
         snapshotActiveTab()
+        if let tab = store.activeTab, !tab.hasBrowsableURL,
+           tab.isIncognito == incognito {
+            store.touch(tab.id, url: url)
+            pool.view(for: tab).load(URLRequest(url: url))
+            _ = activeWebView
+            return
+        }
         let tab = store.newTab(url: url, incognito: incognito)
         _ = pool.view(for: tab)
         _ = activeWebView
@@ -212,6 +300,66 @@ final class BrowserEngine: NSObject {
             guard let image else { return }
             TabSnapshotCache.shared.store(image, for: id,
                                           persistToDisk: !incognito)
+        }
+    }
+
+    // MARK: — SuperBrowse + Summarize
+
+    /// Kick off a SuperBrowse query. Tears down any in-flight session
+    /// first. The hero mounts as soon as `superBrowseSession` becomes
+    /// non-nil; the result view takes over once the model starts
+    /// generating.
+    func startSuperBrowse(query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        dismissSummarize()
+        superBrowseSession = superBrowseEngine.start(question: trimmed)
+    }
+
+    /// Cancel + dismiss SuperBrowse — called from the hero/result close
+    /// buttons or when another modal takes priority.
+    func dismissSuperBrowse() {
+        superBrowseEngine.cancel()
+        superBrowseSession = nil
+    }
+
+    /// Snapshot the live page, kick off the Summarize pipeline, mount
+    /// the origami overlay. Returns immediately so the gesture handler
+    /// stays responsive.
+    func startSummarize() {
+        Task { [weak self] in
+            guard let self else { return }
+            guard let tab = self.store.activeTab,
+                  let view = self.pool.existingView(for: tab.id),
+                  view.window != nil else { return }
+            guard let snapshot = await self.captureSnapshot(for: view) else {
+                return
+            }
+            self.dismissSuperBrowse()
+            self.summarizeSession = self.summarizeEngine.start(
+                webView: view,
+                pageTitle: tab.displayTitle,
+                host: tab.url?.host() ?? "",
+                pageURL: tab.url,
+                snapshot: snapshot)
+        }
+    }
+
+    func dismissSummarize() {
+        summarizeEngine.cancel()
+        summarizeSession = nil
+    }
+
+    /// Async snapshot helper used by Summarize — distinct from the
+    /// fire-and-forget `snapshotActiveTab()` that just feeds the deck
+    /// thumbnail cache.
+    private func captureSnapshot(for view: WKWebView) async -> UIImage? {
+        let config = WKSnapshotConfiguration()
+        config.afterScreenUpdates = false
+        return await withCheckedContinuation { continuation in
+            view.takeSnapshot(with: config) { image, _ in
+                continuation.resume(returning: image)
+            }
         }
     }
 }

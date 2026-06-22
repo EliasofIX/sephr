@@ -70,19 +70,31 @@ final class WebViewPool {
         webView.allowsBackForwardNavigationGestures = true
         webView.isFindInteractionEnabled = true
         webView.scrollView.contentInsetAdjustmentBehavior = .always
-        webView.isOpaque = false
+        webView.isOpaque = true
+        webView.backgroundColor = fieldColor
+        webView.scrollView.backgroundColor = fieldColor
+        webView.underPageBackgroundColor = fieldColor
         webView.customUserAgent = Self.userAgent
 
         views[tab.id] = webView
         markUsed(tab.id)
 
-        if let url = tab.url {
+        if let url = tab.url, tab.hasBrowsableURL {
             webView.load(URLRequest(url: url))
         }
         return webView
     }
 
     func existingView(for id: UUID) -> WKWebView? { views[id] }
+
+    /// Matches `DC.Ink.field` light — the web view's idle backdrop.
+    private var fieldColor: UIColor {
+        UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 0.039, green: 0.047, blue: 0.059, alpha: 1)
+                : UIColor(red: 0.965, green: 0.969, blue: 0.976, alpha: 1)
+        }
+    }
 
     private func markUsed(_ id: UUID) {
         lru.removeAll { $0 == id }

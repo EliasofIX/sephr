@@ -176,6 +176,20 @@ final class TabStore {
         tabs = snap.tabs
         activeTabID = snap.activeTabID
         archiveHorizon = snap.archiveHorizon
+        reconcileActiveTab()
+    }
+
+    /// Drop blank tabs left over from an interrupted session and make sure
+    /// the active pointer still resolves.
+    private func reconcileActiveTab() {
+        tabs.removeAll { !$0.hasBrowsableURL && !$0.isIncognito }
+        if activeTabID != nil, activeTab == nil {
+            activeTabID = liveTabs.first?.id
+        }
+        if activeTab?.hasBrowsableURL != true {
+            activeTabID = liveTabs.first(where: \.hasBrowsableURL)?.id
+                ?? liveTabs.first?.id
+        }
     }
 
     /// Debounced write — tab churn during browsing shouldn't hit the disk

@@ -68,6 +68,7 @@ final class SephrQuitController: NSObject {
         // recent activate/navigate (which only marks the model dirty)
         // would not reach disk.
         SephrTabModel.shared.flushPersist()
+        SephrBoostManager.shared.flushPersist()
         SephrSessionStore.shared.flush()
         // Fire willTerminateNotification explicitly so any code
         // subscribed for cleanup (session store, etc.) runs before we

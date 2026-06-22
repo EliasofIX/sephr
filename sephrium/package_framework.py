@@ -59,6 +59,21 @@ _AGENA_CAL_BRIDGE = (ROOT / ".chromium-src" / "src" / "chrome" /
 CAL_BRIDGE_HEADER = (_SEPHR_CAL_BRIDGE if _SEPHR_CAL_BRIDGE.exists()
                      else _AGENA_CAL_BRIDGE)
 
+UBLOCK_ORIGIN_SRC = ROOT / "sephrium" / "extensions" / "ublock_origin"
+
+
+def _bundle_ublock_origin(resources_dir: pathlib.Path) -> None:
+    """Copy the unpacked uBlock Origin tree into the framework Resources/."""
+    if not UBLOCK_ORIGIN_SRC.is_dir():
+        print("[sephr] WARN: uBlock Origin not fetched — run "
+              "scripts/fetch_ublock_origin.sh", file=sys.stderr)
+        return
+    dest = resources_dir / "ublock_origin"
+    if dest.exists():
+        shutil.rmtree(dest)
+    print("[sephr] bundling uBlock Origin into framework Resources/ ...")
+    shutil.copytree(UBLOCK_ORIGIN_SRC, dest)
+
 
 def chromium_version() -> str:
     txt = ROOT / "sephrium" / "chromium_version.txt"
@@ -148,6 +163,8 @@ def package(build_out: pathlib.Path) -> None:
         ["codesign", "--force", "--sign", "-", str(CF_OUT)],
         check=True,
     )
+
+    _bundle_ublock_origin(versioned / "Resources")
 
     print(f"[sephr] packaged {CF_OUT} + {SEPHRIUM_OUT.name} stub")
     helpers = CF_OUT / "Helpers"

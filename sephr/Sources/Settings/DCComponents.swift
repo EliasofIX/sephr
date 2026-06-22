@@ -107,9 +107,10 @@ struct DCTabBar<Tab: Hashable>: View {
         if #available(macOS 26.0, *) {
             row.glassEffect(
                 .regular,
-                in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                in: RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                     style: .continuous))
         } else {
-            row.dcGlass(cornerRadius: 22)
+            row.dcGlass()
         }
     }
 
@@ -159,12 +160,14 @@ private struct TabBarButton<Tab: Hashable>: View {
             .padding(.horizontal, 6)
             .background {
                 if isSelected {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                     style: .continuous)
                         .fill(DC.Ink.ink)
                         .matchedGeometryEffect(id: "selection",
                                                in: namespace)
                 } else if hovering {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                     style: .continuous)
                         .fill(DC.Ink.surface)
                 }
             }

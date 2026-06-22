@@ -95,12 +95,18 @@ final class SephrFaviconCache: @unchecked Sendable {
     /// Persists `image` as the canonical favicon for `urlString`'s
     /// host. Subsequent `get(for:)` calls for that host return this
     /// image — both this session (in memory) and on relaunch (on disk).
+    /// Downsamples to `maxSide` before caching so a Chromium-supplied
+    /// 256×256 PNG doesn't sit at full bitmap size for the lifetime of
+    /// a tab that renders it at 14×14: memory + disk both shrink and
+    /// the cell's image-view doesn't redo a high-quality downscale on
+    /// every layout pass.
     func set(_ image: NSImage, for urlString: String) {
         guard let host = Self.host(for: urlString) else { return }
+        let downscaled = Self.downscaled(image)
         queue.async { [self] in
-            memoryCache[host] = image
+            memoryCache[host] = downscaled
             negativeCache.remove(host)
-            guard let tiff = image.tiffRepresentation,
+            guard let tiff = downscaled.tiffRepresentation,
                   let rep = NSBitmapImageRep(data: tiff),
                   let png = rep.representation(using: .png,
                                                 properties: [:]) else {
@@ -109,6 +115,27 @@ final class SephrFaviconCache: @unchecked Sendable {
             let file = directory.appendingPathComponent("\(host).png")
             try? png.write(to: file)
         }
+    }
+
+    /// Sized to cover 2× Retina at the largest place we render a
+    /// favicon today (the sidebar tab cell at 14pt). 32pt = 64px on
+    /// Retina, more than the 14×2 the cell asks for; under-32 sources
+    /// pass through untouched.
+    private static let maxFaviconSide: CGFloat = 32
+
+    private static func downscaled(_ image: NSImage) -> NSImage {
+        let s = image.size
+        guard s.width > maxFaviconSide || s.height > maxFaviconSide,
+              s.width > 0, s.height > 0 else { return image }
+        let scale = min(maxFaviconSide / s.width, maxFaviconSide / s.height)
+        let newSize = NSSize(width: s.width * scale,
+                              height: s.height * scale)
+        let result = NSImage(size: newSize, flipped: false) { rect -> Bool in
+            NSGraphicsContext.current?.imageInterpolation = .high
+            image.draw(in: rect)
+            return true
+        }
+        return result
     }
 
     private static func host(for urlString: String) -> String? {

@@ -274,7 +274,7 @@ private struct CategoryChip: View {
                                  : (hovering ? DC.Ink.ink2 : DC.Ink.ink3))
                 .background(
                     chipFill,
-                    in: RoundedRectangle(cornerRadius: 7,
+                    in: RoundedRectangle(cornerRadius: DC.Radius.standard,
                                          style: .continuous))
                 .scaleEffect(isSelected ? 1.04 : 1)
         }
@@ -305,7 +305,8 @@ private struct GlyphCellButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                 style: .continuous)
                     .fill(configuration.isPressed
                           ? DC.Ink.surface : Color.clear))
     }

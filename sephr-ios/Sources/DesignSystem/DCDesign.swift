@@ -41,6 +41,12 @@ enum DC {
                                         dark:  UIColor(white: 1, alpha: 0.06))
     }
 
+    // MARK: — Shape
+    enum Radius {
+        /// Standard corner radius for bars, panels, rows, and controls.
+        static let standard: CGFloat = 8
+    }
+
     // MARK: — Spacing (4pt base)
     enum Space {
         static let xs:     CGFloat = 4
@@ -86,14 +92,14 @@ extension View {
 
     /// Monochrome glass surface — real Liquid Glass on iOS 26, with a
     /// hairline border carrying the specular cue without any hue.
-    func dcGlass(cornerRadius: CGFloat = 20) -> some View {
+    func dcGlass(cornerRadius: CGFloat = DC.Radius.standard) -> some View {
         self.glassEffect(.regular, in: RoundedRectangle(
                 cornerRadius: cornerRadius, style: .continuous))
     }
 
     /// Static glass for surfaces inside scrolling content where the full
     /// dynamic glass would be overkill — material + hairline.
-    func dcSurface(cornerRadius: CGFloat = 20) -> some View {
+    func dcSurface(cornerRadius: CGFloat = DC.Radius.standard) -> some View {
         self.background(.ultraThinMaterial,
                         in: RoundedRectangle(cornerRadius: cornerRadius,
                                              style: .continuous))
@@ -116,7 +122,8 @@ struct DCPrimaryButtonStyle: ButtonStyle {
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity)
             .background(
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                 style: .continuous)
                     .fill(DC.Ink.ink)
                     .opacity(configuration.isPressed ? 0.82 : 1))
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
@@ -133,11 +140,81 @@ struct DCSecondaryButtonStyle: ButtonStyle {
             .padding(.horizontal, DC.Space.l)
             .padding(.vertical, DC.Space.m)
             .background(
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                 style: .continuous)
                     .fill(DC.Ink.surface)
                     .overlay(
-                        Capsule(style: .continuous)
+                        RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                          style: .continuous)
                             .strokeBorder(DC.Ink.hairline, lineWidth: 1))
                     .opacity(configuration.isPressed ? 0.72 : 1))
+    }
+}
+
+// MARK: — AI affordance shimmer
+//
+// DC monochrome replacement for Arc's pink/purple gradient sweep that
+// marks AI surfaces. We breathe the foreground opacity between full and
+// 55% — the eye reads it as "thinking" without any chroma. Applied to
+// the "Reading N pages" headline, the SuperBrowse pill while active, and
+// the Writing… eyebrow during streaming.
+private struct DCLuminanceShimmer: ViewModifier {
+    let active: Bool
+    @State private var dim = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(active && dim ? 0.55 : 1.0)
+            .onAppear { startIfNeeded() }
+            .onChange(of: active) { _, _ in startIfNeeded() }
+    }
+
+    private func startIfNeeded() {
+        guard active else {
+            withAnimation(.easeOut(duration: 0.18)) { dim = false }
+            return
+        }
+        withAnimation(.easeInOut(duration: 1.0)
+            .repeatForever(autoreverses: true)) {
+            dim = true
+        }
+    }
+}
+
+extension View {
+    /// Monochrome luminance pulse for AI affordances. No-op when `active`
+    /// is false — safe to attach permanently and flip per state.
+    func dcLuminanceShimmer(active: Bool = true) -> some View {
+        modifier(DCLuminanceShimmer(active: active))
+    }
+}
+
+// MARK: — SuperBrowse pill
+//
+// Inline action chip surfaced beside each suggestion row in the search
+// overlay and above the typed-query row. Triggers SuperBrowse on the
+// adjacent query. Designed to read as a peer to the row, not a system
+// button — narrow capsule, hairline border, body weight.
+struct SuperBrowsePill: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text("SuperBrowse")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(DC.Ink.ink)
+                .padding(.horizontal, DC.Space.m)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                     style: .continuous)
+                        .fill(DC.Ink.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                              style: .continuous)
+                                .strokeBorder(DC.Ink.hairline, lineWidth: 1)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("SuperBrowse this query")
     }
 }

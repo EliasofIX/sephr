@@ -1,0 +1,18 @@
+# Copyright (c) Sephr. All rights reserved.
+
+source_set("builtin_extensions") {
+  sources = [
+    "ublock_installer.cc",
+    "ublock_installer.h",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome/browser/extensions",
+    "//chrome/common",
+    "//extensions/buildflags",
+    "//extensions/common",
+  ]
+
+  visibility = [ "//chrome/browser:*" ]
+}

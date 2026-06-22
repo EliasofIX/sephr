@@ -45,8 +45,25 @@ static inline NSString* CAL_StringSafe(const char* s) {
     NSString* _currentURL;
     NSString* _currentTitle;
     BOOL _isLoading;
+    // Desired per-tab mute. Mirrored to the WebContents and re-applied on
+    // (re)wire so mute survives sleep/wake (the WebContents is destroyed on
+    // sleep and recreated on wake). isAudioMuted reads live truth when a
+    // WebContents exists, else falls back to this.
+    BOOL _desiredMuted;
     BOOL _chromiumViewAttached;
     NSSize _lastReportedSize;  // for setFrameSize early-exit
+    // Last media-session snapshot from CAL_MediaSessionCallback. Cached so
+    // property reads are synchronous; cleared on sleep (the session dies
+    // with the WebContents) so a stale "playing" can't outlive its page.
+    BOOL _isMediaControllable;
+    BOOL _isMediaPlaying;
+    BOOL _canMediaPrevTrack;
+    BOOL _canMediaNextTrack;
+    NSString* _mediaTitle;
+    NSString* _mediaArtist;
+    // Trackpad swipe accumulator for smoother back/forward navigation
+    CGFloat _swipeAccum;
+    BOOL _swipeCommitted;
 }
 
 // All four trampolines re-enter Obj-C on the UI thread. They route the work
@@ -125,6 +142,47 @@ static void CAL_LoadingCallback(void* ctx, int is_loading) {
     dispatch_async(dispatch_get_main_queue(), ^{
         view->_isLoading = loading;
         if (view.onLoading) view.onLoading(loading, 0.0);
+    });
+}
+
+static void CAL_AudioStateCallback(void* ctx, int is_audible) {
+    if (!ctx) return;
+    CALWebView* view = (__bridge CALWebView*)ctx;
+    BOOL audible = is_audible != 0;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (view.onAudioStateChange) view.onAudioStateChange(audible);
+    });
+}
+
+// Merged media-session snapshot (play/pause state + Media Session API
+// metadata + track-skip availability). Strings are transient UTF-8 owned by
+// the bridge — CAL_StringSafe copies them before the hop to main. Empty
+// metadata surfaces as nil so Swift can `?? tab.title` cleanly.
+static void CAL_MediaSessionCallback(void* ctx,
+                                     int is_controllable,
+                                     int is_playing,
+                                     const char* title,
+                                     const char* artist,
+                                     const char* source_title,
+                                     int can_prev_track,
+                                     int can_next_track) {
+    if (!ctx) return;
+    (void)source_title;  // not surfaced yet — favicon + tab title cover it
+    CALWebView* view = (__bridge CALWebView*)ctx;
+    NSString* t = (title && title[0]) ? CAL_StringSafe(title) : nil;
+    NSString* a = (artist && artist[0]) ? CAL_StringSafe(artist) : nil;
+    BOOL controllable = is_controllable != 0;
+    BOOL playing = is_playing != 0;
+    BOOL canPrev = can_prev_track != 0;
+    BOOL canNext = can_next_track != 0;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        view->_isMediaControllable = controllable;
+        view->_isMediaPlaying = playing;
+        view->_canMediaPrevTrack = canPrev;
+        view->_canMediaNextTrack = canNext;
+        view->_mediaTitle = t;
+        view->_mediaArtist = a;
+        if (view.onMediaSessionChange) view.onMediaSessionChange();
     });
 }
 
@@ -252,6 +310,14 @@ static void CAL_CloseRequestCallback(void* ctx) {
         _webContents, CAL_FaviconCallback, (__bridge void*)self);
     SephriumWebContentsSetLoadingCallback(
         _webContents, CAL_LoadingCallback, (__bridge void*)self);
+    SephriumWebContentsSetAudioStateCallback(
+        _webContents, CAL_AudioStateCallback, (__bridge void*)self);
+    SephriumWebContentsSetMediaSessionCallback(
+        _webContents, CAL_MediaSessionCallback, (__bridge void*)self);
+    // Re-apply any desired mute to the (possibly freshly recreated) contents
+    // so per-tab mute persists across sleep/wake.
+    if (_desiredMuted)
+        SephriumWebContentsSetAudioMuted(_webContents, 1);
     SephriumWebContentsSetNewTabRequestCallback(
         _webContents, CAL_NewTabRequestCallback, (__bridge void*)self);
     SephriumWebContentsSetTargetURLCallback(
@@ -359,6 +425,8 @@ static void CAL_CloseRequestCallback(void* ctx) {
     SephriumWebContentsSetNavCallback(_webContents, NULL, NULL);
     SephriumWebContentsSetFaviconCallback(_webContents, NULL, NULL);
     SephriumWebContentsSetLoadingCallback(_webContents, NULL, NULL);
+    SephriumWebContentsSetAudioStateCallback(_webContents, NULL, NULL);
+    SephriumWebContentsSetMediaSessionCallback(_webContents, NULL, NULL);
     SephriumWebContentsSetNewTabRequestCallback(_webContents, NULL, NULL);
     SephriumWebContentsSetTargetURLCallback(_webContents, NULL, NULL);
     SephriumWebContentsSetPopupRequestCallback(_webContents, NULL, NULL);
@@ -392,6 +460,55 @@ static void CAL_CloseRequestCallback(void* ctx) {
     return _webContents && SephriumWebContentsIsAudible(_webContents) != 0;
 }
 
+- (BOOL)isAudioMuted {
+    if (_webContents)
+        return SephriumWebContentsIsAudioMuted(_webContents) != 0;
+    return _desiredMuted;
+}
+
+- (void)setAudioMuted:(BOOL)muted {
+    _desiredMuted = muted;
+    if (_webContents)
+        SephriumWebContentsSetAudioMuted(_webContents, muted ? 1 : 0);
+}
+
+- (BOOL)isMediaControllable { return _isMediaControllable; }
+- (BOOL)isMediaPlaying      { return _isMediaPlaying; }
+- (NSString*)mediaTitle     { return _mediaTitle; }
+- (NSString*)mediaArtist    { return _mediaArtist; }
+- (BOOL)canMediaPrevTrack   { return _canMediaPrevTrack; }
+- (BOOL)canMediaNextTrack   { return _canMediaNextTrack; }
+
+- (void)mediaResume {
+    if (_webContents) SephriumWebContentsMediaResume(_webContents);
+}
+- (void)mediaSuspend {
+    if (_webContents) SephriumWebContentsMediaSuspend(_webContents);
+}
+- (void)mediaNextTrack {
+    if (_webContents) SephriumWebContentsMediaNextTrack(_webContents);
+}
+- (void)mediaPreviousTrack {
+    if (_webContents) SephriumWebContentsMediaPreviousTrack(_webContents);
+}
+
+// The media session dies with the WebContents and the bridge can't signal
+// that (its observer is torn down too) — clear the snapshot ourselves so a
+// Now Playing UI doesn't keep showing a dead session, and ping the host.
+// Called from sleep (never dealloc: firing a host callback out of dealloc
+// would hand it a half-dead view).
+- (void)_resetMediaSessionState {
+    BOOL wasControllable = _isMediaControllable;
+    _isMediaControllable = NO;
+    _isMediaPlaying = NO;
+    _canMediaPrevTrack = NO;
+    _canMediaNextTrack = NO;
+    _mediaTitle = nil;
+    _mediaArtist = nil;
+    if (wasControllable && self.onMediaSessionChange)
+        self.onMediaSessionChange();
+}
+
 // Snapshot the committed URL, then destroy the WebContents. The view
 // object (and its place in the tab model / sidebar) survives; wake
 // recreates the contents at the snapshotted URL. _currentTitle is left
@@ -404,6 +521,7 @@ static void CAL_CloseRequestCallback(void* ctx) {
     if (u) SephriumStringFree(u);
     if (live.length) _currentURL = [live copy];
     [self _teardownWebContents];
+    [self _resetMediaSessionState];
 }
 
 // Recreate the WebContents at the last committed URL. Mirrors
@@ -437,6 +555,7 @@ static void CAL_CloseRequestCallback(void* ctx) {
 - (void)goBack    { if (_webContents) SephriumWebContentsGoBack(_webContents); }
 - (void)goForward { if (_webContents) SephriumWebContentsGoForward(_webContents); }
 - (void)reload    { if (_webContents) SephriumWebContentsReload(_webContents); }
+- (void)reloadIgnoringCache { if (_webContents) SephriumWebContentsReloadBypassingCache(_webContents); }
 - (void)stop      { if (_webContents) SephriumWebContentsStop(_webContents); }
 - (void)freeze    { if (_webContents) SephriumWebContentsSetFrozen(_webContents, 1); }
 - (void)unfreeze  { if (_webContents) SephriumWebContentsSetFrozen(_webContents, 0); }

@@ -20,6 +20,21 @@ final class SephrKeyboardShortcutMonitor {
         }
     }
 
+    /// The active tab's ID when it's a Note — the canvas commands
+    /// (undo/redo/paste) reroute to it instead of the web plumbing.
+    private static func activeNoteID() -> UUID? {
+        guard let tab = SephrTabModel.shared.activeTab(),
+              tab.kind == .note else { return nil }
+        return tab.id
+    }
+
+    /// True while any AppKit field editor has key focus (the in-canvas
+    /// text element, the note title, the sidebar URL bar) — those keep
+    /// the standard text-editing chords.
+    private static var isTextEditing: Bool {
+        NSApp.keyWindow?.firstResponder is NSTextView
+    }
+
     private static func handle(
         _ event: NSEvent,
         wc: SephrWindowController
@@ -45,6 +60,12 @@ final class SephrKeyboardShortcutMonitor {
             SephrQuitController.shared.confirmQuit(nil); return nil
         case (true, false, false, "t"):
             SephrCommandBar.show(in: wc); return nil
+        case (true, true, false, "t"):
+            // Cmd+Shift+T — reopen the most-recently-closed tab, like
+            // every other browser. (Shift cases match the unshifted
+            // character: with Command held charactersIgnoringModifiers
+            // returns the base key — see the other Shift cases below.)
+            SephrTabModel.shared.reopenLastClosedTab(); return nil
         case (true, false, false, "w"):
             SephrTabModel.shared.closeActiveTab(); return nil
         case (true, true, false, "["):
@@ -80,6 +101,12 @@ final class SephrKeyboardShortcutMonitor {
             SephrSpaceManager.shared.switchByOffset(-1); return nil
         case (true, false, false, "r"):
             SephrTabModel.shared.activeTab()?.webView?.reload(); return nil
+        case (true, true, false, "r"):
+            // Cmd+Shift+R — hard reload, bypassing the HTTP cache (matches
+            // Chromium's IDC_RELOAD_BYPASSING_CACHE). The raw-WebContents
+            // embed has no Browser-level accelerator, so we route it here.
+            SephrTabModel.shared.activeTab()?.webView?.reloadIgnoringCache()
+            return nil
         case (true, false, false, "l"):
             SephrCommandBar.show(in: wc); return nil
 
@@ -95,6 +122,13 @@ final class SephrKeyboardShortcutMonitor {
         // bar still gets pasted into when it's focused — the page
         // input gets it when the WebContentsViewCocoa is focused.
         case (true, false, false, "v"):
+            // On a note canvas (and not inside a text editor), paste
+            // inserts the pasteboard image/text as a canvas element.
+            if let noteID = activeNoteID(), !isTextEditing {
+                NotificationCenter.default.post(
+                    name: .sephrNotePaste, object: noteID)
+                return nil
+            }
             NSApp.sendAction(#selector(NSText.paste(_:)),
                              to: nil, from: nil); return nil
         case (true, false, false, "c"):
@@ -107,9 +141,21 @@ final class SephrKeyboardShortcutMonitor {
             NSApp.sendAction(#selector(NSResponder.selectAll(_:)),
                              to: nil, from: nil); return nil
         case (true, false, false, "z"):
+            // Note canvas owns its own history — Cmd+Z walks the
+            // document's undo stack unless a text editor has focus.
+            if let noteID = activeNoteID(), !isTextEditing {
+                NotificationCenter.default.post(
+                    name: .sephrNoteUndo, object: noteID)
+                return nil
+            }
             NSApp.sendAction(#selector(UndoManager.undo),
                              to: nil, from: nil); return nil
         case (true, true, false, "z"):
+            if let noteID = activeNoteID(), !isTextEditing {
+                NotificationCenter.default.post(
+                    name: .sephrNoteRedo, object: noteID)
+                return nil
+            }
             NSApp.sendAction(#selector(UndoManager.redo),
                              to: nil, from: nil); return nil
         case (true, true, false, "v"):

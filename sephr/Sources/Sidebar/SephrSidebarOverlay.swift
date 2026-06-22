@@ -58,7 +58,7 @@ final class SephrFloatingSidebar: NSView {
         let backdrop: NSView
         if #available(macOS 26, *) {
             let glass = NSGlassEffectView(frame: .zero)
-            glass.cornerRadius = 14
+            glass.cornerRadius = DC.Radius.standard
             glass.tintColor = nil
             backdrop = glass
         } else {
@@ -67,7 +67,7 @@ final class SephrFloatingSidebar: NSView {
             v.blendingMode = .behindWindow
             v.state = .active
             v.wantsLayer = true
-            v.layer?.cornerRadius = 14
+            v.layer?.cornerRadius = DC.Radius.standard
             v.layer?.masksToBounds = true
             backdrop = v
         }
@@ -118,41 +118,67 @@ final class SephrFloatingSidebar: NSView {
         onPointerExit?()
     }
 
-    // Pure CALayer animations driven by a single CATransaction so that
-    // opacity and transform share an animation engine and don't desync.
-    // Mixing `animator().alphaValue` with a raw `layer.transform =` (as
-    // the previous implementation did) had each property pick up a
-    // different duration / timing curve — the visible effect was a
-    // choppy slide-out where the fade finished before the translation.
-    private static let offscreenTranslation =
-        CATransform3DMakeTranslation(-24, 0, 0)
+    /// How far off the leading edge the card starts. Uses the laid-out
+    /// width so the motion reads as a real slide-in rather than a fade
+    /// with a tiny 24pt nudge (which felt clunky against the 240pt card).
+    private func offscreenTransform() -> CATransform3D {
+        CATransform3DMakeTranslation(-(bounds.width + 16), 0, 0)
+    }
 
-    func slideIn() {
-        guard let layer = layer else { return }
+    func slideIn(completion: (() -> Void)? = nil) {
+        guard let layer = layer else { completion?(); return }
+        let offscreen = offscreenTransform()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer.transform = Self.offscreenTranslation
-        layer.opacity = 0
+        layer.transform = offscreen
+        layer.opacity = 1
         CATransaction.commit()
 
+        if SephrSidebarMotion.reduceMotion {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.transform = CATransform3DIdentity
+            CATransaction.commit()
+            completion?()
+            return
+        }
+
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.22)
-        CATransaction.setAnimationTimingFunction(
-            CAMediaTimingFunction(name: .easeOut))
+        CATransaction.setCompletionBlock(completion)
+        // Commit the new resting values first; the spring animates *from*
+        // the old presentation values *to* these new model values.
         layer.transform = CATransform3DIdentity
-        layer.opacity = 1
+
+        let transform = SephrSidebarMotion.spring(
+            keyPath: "transform", bounce: 0.08, perceptualDuration: 0.32)
+        transform.fromValue = NSValue(caTransform3D: offscreen)
+        transform.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        layer.add(transform, forKey: "transform")
         CATransaction.commit()
     }
 
     func slideOut(completion: @escaping () -> Void) {
         guard let layer = layer else { completion(); return }
+
+        if SephrSidebarMotion.reduceMotion {
+            layer.opacity = 0
+            completion()
+            return
+        }
+
+        let offscreen = offscreenTransform()
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.2)
-        CATransaction.setAnimationTimingFunction(
-            CAMediaTimingFunction(name: .easeIn))
         CATransaction.setCompletionBlock(completion)
-        layer.transform = Self.offscreenTranslation
-        layer.opacity = 0
+        layer.transform = offscreen
+
+        // Bounce 0 on the way out: an overshoot would push further
+        // off-screen (invisible anyway) but would also keep the view
+        // alive in the hierarchy for the settle tail before completion.
+        let transform = SephrSidebarMotion.spring(
+            keyPath: "transform", bounce: 0, perceptualDuration: 0.28)
+        transform.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
+        transform.toValue = NSValue(caTransform3D: offscreen)
+        layer.add(transform, forKey: "transform")
         CATransaction.commit()
     }
 }

@@ -38,6 +38,9 @@ final class SephrSplitViewController: NSSplitViewController {
     private func hostingItem(for tab: SephrTab) -> NSSplitViewItem {
         let container = NSView()
         let wv = tab.getOrCreateWebView()
+        // A tab dragged into a split may have been slept while hidden —
+        // wake it so the pane paints (wake re-navigates the stored URL).
+        if wv.isAsleep { wv.wake() }
         wv.frame = container.bounds
         wv.autoresizingMask = [.width, .height]
         container.addSubview(wv)

@@ -14,7 +14,7 @@ final class SephrSplitExpandButton: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 14
+        layer?.cornerRadius = DC.Radius.standard
         layer?.masksToBounds = true
 
         // Liquid Glass backdrop — same posture as the sidebar tab pills
@@ -22,7 +22,7 @@ final class SephrSplitExpandButton: NSView {
         let glass: NSView
         if #available(macOS 26, *) {
             let g = NSGlassEffectView()
-            g.cornerRadius = 14
+            g.cornerRadius = DC.Radius.standard
             g.tintColor = nil
             glass = g
         } else {
@@ -31,7 +31,7 @@ final class SephrSplitExpandButton: NSView {
             v.blendingMode = .withinWindow
             v.state = .active
             v.wantsLayer = true
-            v.layer?.cornerRadius = 14
+            v.layer?.cornerRadius = DC.Radius.standard
             v.layer?.masksToBounds = true
             glass = v
         }

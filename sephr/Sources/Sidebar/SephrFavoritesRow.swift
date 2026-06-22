@@ -43,7 +43,11 @@ final class SephrFavoritesRow: NSView {
 
     private let stack = NSStackView()
     private var compact = false
-    private var lastKey: String = ""
+    /// Last rendered structure key — a Hasher-folded Int over compact +
+    /// pinned-tab IDs. Was a String concatenated via += per pinned tab,
+    /// allocating per emit on every structural change.
+    private var lastKey: Int = 0
+    private var hasRendered = false
 
     /// Structure-channel subscription driving `reload()` (pin/unpin/
     /// reorder all post structure). Dropping the token unsubscribes.
@@ -96,17 +100,20 @@ final class SephrFavoritesRow: NSView {
     func setCompact(_ compact: Bool) {
         guard self.compact != compact else { return }
         self.compact = compact
-        lastKey = ""
+        hasRendered = false
         reload()
     }
 
     @MainActor @objc func reload() {
         let pinned = Array(
             SephrTabModel.shared.allPinnedTabs().prefix(Self.maxVisiblePins))
-        var key = compact ? "C|" : "c|"
-        for tab in pinned { key += "\(tab.id.uuidString);" }
-        if key == lastKey { return }
+        var hasher = Hasher()
+        hasher.combine(compact)
+        for tab in pinned { hasher.combine(tab.id) }
+        let key = hasher.finalize()
+        if hasRendered && key == lastKey { return }
         lastKey = key
+        hasRendered = true
 
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         insertionBar.isHidden = true
@@ -231,7 +238,7 @@ private final class SephrFavoriteCell: NSView {
         wantsLayer = true
         // Zen-style card corner radius — softer than the prior 8pt so
         // the chip reads as a discrete tile rather than a button.
-        layer?.cornerRadius = 12
+        layer?.cornerRadius = DC.Radius.standard
         installGlassPill()
         refreshAppearance()
 
@@ -360,7 +367,7 @@ private final class SephrFavoriteCell: NSView {
     private func installGlassPill() {
         guard #available(macOS 26, *) else { return }
         let g = NSGlassEffectView(frame: .zero)
-        g.cornerRadius = 12
+        g.cornerRadius = DC.Radius.standard
         g.tintColor = nil
         g.translatesAutoresizingMaskIntoConstraints = false
         addSubview(g, positioned: .below, relativeTo: nil)
@@ -389,7 +396,11 @@ private final class SephrFavoriteCell: NSView {
             case (false, true):
                 glass.tintColor = NSColor.white.withAlphaComponent(0.10)
             case (false, false):
-                glass.tintColor = nil
+                // Faint always-on fill (was clear glass) so every pin reads
+                // as a discrete tile/button against the dark sidebar instead
+                // of dissolving into it. Still a refracting glass surface —
+                // just lifted enough to register as a button at rest.
+                glass.tintColor = NSColor.white.withAlphaComponent(0.06)
             }
             layer?.backgroundColor = NSColor.clear.cgColor
             return
@@ -446,7 +457,7 @@ private final class SephrFavoriteCell: NSView {
             // The active-tab flag flipped (user switched tabs); re-tint
             // so the pin's selected/idle state matches the model.
             refreshAppearance()
-        case .title, .url, .loading:
+        case .title, .url, .loading, .audio, .media:
             break  // chip renders favicon only — nothing to update
         }
     }
@@ -495,8 +506,7 @@ extension SephrFavoritesRow {
         insertionBar.isHidden = true
         guard let id = SephrTabPasteboard.tabID(
                 from: sender.draggingPasteboard),
-              let tab = SephrTabModel.shared.allTabs
-                .first(where: { $0.id == id })
+              let tab = SephrTabModel.shared.tab(withID: id)
         else { return false }
         let point = convert(sender.draggingLocation, from: nil)
         SephrTabModel.shared.movePinnedTab(

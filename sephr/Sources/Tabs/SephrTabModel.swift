@@ -3,11 +3,80 @@ import Combine
 import SephrKit
 
 @MainActor
-final class SephrTabModel: ObservableObject {
+final class SephrTabModel {
     static let shared = SephrTabModel()
 
-    @Published private(set) var allTabs: [SephrTab] = []
-    @Published private(set) var allFolders: [SephrTabFolder] = []
+    // No SwiftUI / Combine consumers — every reader hits the TabEventBus
+    // structure channel or reads the array directly. ObservableObject /
+    // @Published would just fire objectWillChange on every mutation for
+    // nobody to listen to.
+    private(set) var allTabs: [SephrTab] = []
+    private(set) var allFolders: [SephrTabFolder] = []
+
+    /// Monotonic counter bumped on every structural change (add / remove /
+    /// reorder / move / pin / folder). Sidebar / Favorites / split UI store
+    /// the last value they rendered and skip rebuilds when it hasn't moved,
+    /// instead of allocating + comparing ~5KB structure-key strings each
+    /// time. Wraps with `&+` so the model never has to fear overflow.
+    private(set) var structureGeneration: UInt64 = 0
+
+    /// Cached active tab so `activeTab()` is O(1) and `activateTab` skips
+    /// the O(N) deactivate loop. Updated by `setActive`.
+    private weak var cachedActiveTab: SephrTab?
+
+    /// Lazy O(1) indexes over `allTabs`. Built on first read, dropped on
+    /// every structural change (`emit()`) and archive sweep so a stale
+    /// slot can never resolve to the wrong tab. Replaces the
+    /// `firstIndex(where: $0.id == ...)` / `first(where: webView === ...)`
+    /// scans that ran on every tab close / move / swap.
+    private var _tabIndex: [UUID: Int]?
+    private var _tabByWebView: [ObjectIdentifier: SephrTab]?
+    private var _tabsByFolder: [UUID: [SephrTab]]?
+
+    private func invalidateLookups() {
+        _tabIndex = nil
+        _tabByWebView = nil
+        _tabsByFolder = nil
+    }
+
+    /// `allTabs.firstIndex { $0.id == id }` in O(1) amortized.
+    private func indexOfTab(id: UUID) -> Int? {
+        if let cache = _tabIndex { return cache[id] }
+        var dict = [UUID: Int](minimumCapacity: allTabs.count)
+        for (i, t) in allTabs.enumerated() { dict[t.id] = i }
+        _tabIndex = dict
+        return dict[id]
+    }
+
+    func tab(withID id: UUID) -> SephrTab? {
+        indexOfTab(id: id).map { allTabs[$0] }
+    }
+
+    /// O(1) reverse lookup from a live CALWebView pointer to the tab that
+    /// owns it. Used by the window controller's tab-swap path, which used
+    /// to scan `allTabs` on every showTab.
+    func tab(owning webView: AnyObject) -> SephrTab? {
+        let key = ObjectIdentifier(webView)
+        if let cache = _tabByWebView { return cache[key] }
+        var dict = [ObjectIdentifier: SephrTab](minimumCapacity: allTabs.count)
+        for t in allTabs {
+            if let wv = t.webView { dict[ObjectIdentifier(wv)] = t }
+        }
+        _tabByWebView = dict
+        return dict[key]
+    }
+
+    /// O(1) folder member list. `SephrFolderCell.reload()` calls this on
+    /// every expand/collapse — used to walk `allTabs` end-to-end per folder.
+    func tabs(inFolder folderID: UUID) -> [SephrTab] {
+        if let cache = _tabsByFolder { return cache[folderID] ?? [] }
+        var dict = [UUID: [SephrTab]]()
+        for t in allTabs {
+            if let fid = t.folderID { dict[fid, default: []].append(t) }
+        }
+        _tabsByFolder = dict
+        return dict[folderID] ?? []
+    }
 
     private var archiveTimer: Timer?
     private var selectionAnchor: UUID?
@@ -31,6 +100,7 @@ final class SephrTabModel: ObservableObject {
         let session = SephrSessionStore.shared.loadSession()
         self.allTabs = session.tabs
         self.allFolders = session.folders
+        self.cachedActiveTab = session.tabs.first { $0.isActive }
         rebindFolderReferences()
         scheduleAutoArchive()
     }
@@ -48,20 +118,182 @@ final class SephrTabModel: ObservableObject {
         let tab = SephrTab(url: url, title: "New Tab", spaceID: space.id)
         _ = tab.getOrCreateWebView()   // warm so the first paint is snappy
         allTabs.append(tab)
-        activateTab(tab)
-        emit(); persist()
+        emit()              // structural: tab list now includes this tab
+        activateTab(tab)    // activates + persists (no structure re-fire)
         return tab
     }
 
+    /// Create a Note — an Arc-easel-style native canvas that lives in the
+    /// sidebar like a tab but never owns a WebContents. Its drawing
+    /// document persists separately under App Support/Sephr/Notes/<id>/;
+    /// the session only records the tab shell (id, kind, title, space).
+    @discardableResult
+    func newNote(in space: SephrSpace) -> SephrTab {
+        let tab = SephrTab(kind: .note, url: "",
+                           title: "Untitled Note", spaceID: space.id)
+        allTabs.append(tab)
+        emit()              // structural: tab list now includes this note
+        activateTab(tab)    // activates + persists (no structure re-fire)
+        return tab
+    }
+
+    /// Reattach a tab shell for a note that still exists on disk but was
+    /// closed from the sidebar. Used by the Notes library.
+    @discardableResult
+    func reopenNote(id: UUID, title: String, in space: SephrSpace) -> SephrTab {
+        if let existing = tab(withID: id) { return existing }
+        let tab = SephrTab(id: id, kind: .note, url: "",
+                           title: title, spaceID: space.id)
+        allTabs.append(tab)
+        emit()
+        return tab
+    }
+
+    /// Pull an archived tab back into the live sidebar.
+    func restoreFromArchive(_ tab: SephrTab) {
+        guard tab.isArchived else { return }
+        tab.isArchived = false
+        tab.lastAccessedAt = Date()
+        emit()
+        activateTab(tab)
+    }
+
+    /// Rename a tab in place (the Note canvas's title field edits the
+    /// sidebar title live). Posts `.title` so the cell refreshes without
+    /// a structural rebuild.
+    func renameTab(_ tab: SephrTab, title: String) {
+        guard tab.title != title else { return }
+        tab.title = title
+        TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .title))
+        persist()
+    }
+
     func closeTab(_ tab: SephrTab) {
+        // Closing the tab you're viewing hands focus to the tab above it
+        // in the sidebar (Arc-style) so the window never blanks out.
+        // Resolve the target BEFORE the structural removal, while the
+        // sibling order still includes `tab`. Closing a *background* tab
+        // leaves the active tab alone (promote stays nil).
+        let promote = tab.isActive ? activationTarget(closing: tab) : nil
+
         // Closing a split member dissolves the whole group — a half-empty
         // split pill would be meaningless.
         if SephrSplitManager.shared.contains(tab.id) {
             SephrSplitManager.shared.clear()
         }
+        // Snapshot for Cmd+Shift+T before the structural removal, while
+        // we can still record where the tab sat in `allTabs`.
+        recordClosedTab(tab)
         tab.webView?.removeFromSuperview()
         allTabs.removeAll { $0.id == tab.id }
-        emit(); persist()
+
+        if let promote {
+            // The removal itself is the structural change; activateTab
+            // only fires the active-change channel + persists, so we
+            // emit explicitly here for sidebar/favorites/now-playing-pill.
+            emit()
+            activateTab(promote)
+        } else {
+            emit(); persist()
+        }
+    }
+
+    /// After the active `tab` closes, the tab to activate in its place:
+    /// the one visually above it in the sidebar, or — if it was the first
+    /// in its group — the one below. Falls back to any remaining tab in
+    /// its space so a space never ends up with no active tab while tabs
+    /// remain. nil when nothing is left to show.
+    private func activationTarget(closing tab: SephrTab) -> SephrTab? {
+        let peers = closeNeighbors(of: tab)
+        if let idx = peers.firstIndex(where: { $0.id == tab.id }) {
+            if idx > 0 { return peers[idx - 1] }          // above
+            if peers.count > 1 { return peers[idx + 1] }  // was first → below
+        }
+        // The tab's visual group emptied (e.g. it was the only member of
+        // its folder): keep the space alive by promoting any other tab.
+        return allTabs.first {
+            $0.id != tab.id && $0.spaceID == tab.spaceID && !$0.isArchived
+        }
+    }
+
+    /// The sibling list used to pick a close-neighbor, in sidebar order.
+    /// A tab peers with its own visual group so focus never jumps across a
+    /// boundary: a pinned tab with the favorites grid, a folder member
+    /// with its folder, a top-level tab with the space's top-level tabs.
+    private func closeNeighbors(of tab: SephrTab) -> [SephrTab] {
+        if tab.isPinned { return allPinnedTabs() }
+        let inSpace = allTabs.filter {
+            $0.spaceID == tab.spaceID && !$0.isPinned && !$0.isArchived
+        }
+        if let fid = tab.folderID {
+            return inSpace.filter { $0.folderID == fid }
+        }
+        return inSpace.filter { $0.folderID == nil }
+    }
+
+    /// Close every tab in the same sidebar group as `tab` except `tab` itself
+    /// (Chrome's "Close other tabs"). Pinned tabs are always preserved.
+    func closeOtherTabs(keeping tab: SephrTab) {
+        let victims = closeNeighbors(of: tab).filter {
+            $0.id != tab.id && !$0.isPinned
+        }
+        closeBatch(victims, fallbackActive: tab)
+    }
+
+    /// Close tabs sitting visually below `tab` in the same sidebar group
+    /// (Chrome's "Close tabs to the right"). Pinned tabs are always preserved.
+    func closeTabsBelow(_ tab: SephrTab) {
+        let peers = closeNeighbors(of: tab)
+        guard let idx = peers.firstIndex(where: { $0.id == tab.id }) else { return }
+        let victims = peers.suffix(from: idx + 1).filter { !$0.isPinned }
+        closeBatch(victims, fallbackActive: tab)
+    }
+
+    /// Remove `victims` in a single structural mutation: one `allTabs`
+    /// rewrite + one `emit()` + one debounced persist, instead of N
+    /// individual `closeTab(...)` calls (each of which fires structure
+    /// posts and triggers a full sidebar rebuild). When the currently
+    /// active tab is itself a victim, focus is handed to `fallbackActive`.
+    private func closeBatch(_ victims: [SephrTab],
+                            fallbackActive: SephrTab) {
+        guard !victims.isEmpty else { return }
+        let victimIDs = Set(victims.map(\.id))
+        let active = activeTab()
+        let needsPromote =
+            active.map { victimIDs.contains($0.id) } ?? false
+        let split = SephrSplitManager.shared
+        for v in victims {
+            if split.contains(v.id) { split.clear() }
+            recordClosedTab(v)
+            v.webView?.removeFromSuperview()
+        }
+        // Single linear pass instead of N successive removeAll calls.
+        allTabs.removeAll { victimIDs.contains($0.id) }
+        if needsPromote, !victimIDs.contains(fallbackActive.id) {
+            emit()
+            activateTab(fallbackActive)
+        } else {
+            emit(); persist()
+        }
+    }
+
+    /// Open a new tab with the same URL, immediately after `tab` in the
+    /// sidebar. Becomes active, like Chrome's "Duplicate".
+    @discardableResult
+    func duplicateTab(_ tab: SephrTab) -> SephrTab {
+        let url = tab.webView?.currentURL ?? tab.url
+        let copy = SephrTab(kind: tab.kind, url: url, title: tab.title,
+                            spaceID: tab.spaceID)
+        copy.folderID = tab.folderID
+        copy.isPinned = tab.isPinned
+        if let i = indexOfTab(id: tab.id) {
+            allTabs.insert(copy, at: i + 1)
+        } else {
+            allTabs.append(copy)
+        }
+        emit()              // structural: tab list now includes the copy
+        activateTab(copy)   // activates + persists (no structure re-fire)
+        return copy
     }
 
     func closeActiveTab() {
@@ -69,25 +301,121 @@ final class SephrTabModel: ObservableObject {
         closeTab(tab)
     }
 
+    // MARK: — Reopen closed tab (Cmd+Shift+T)
+
+    /// A closed tab's restorable state plus where it sat in `allTabs`, so
+    /// reopening drops it back roughly where it was in the sidebar. We keep
+    /// the original `id` — the live object is gone by the time we restore,
+    /// so there's nothing to collide with.
+    private struct ClosedTab {
+        let id: UUID
+        let kind: SephrTab.Kind
+        let url: String
+        let title: String
+        let spaceID: UUID
+        let folderID: UUID?
+        let isPinned: Bool
+        let createdAt: Date
+        let index: Int
+    }
+
+    /// LIFO stack of recently-closed tabs (oldest first, newest last).
+    /// Capped so a long session can't grow it without bound; this is
+    /// runtime-only and intentionally not persisted across launches.
+    private var closedTabs: [ClosedTab] = []
+    private static let maxClosedTabs = 25
+
+    private func recordClosedTab(_ tab: SephrTab) {
+        guard let idx = indexOfTab(id: tab.id) else { return }
+        closedTabs.append(ClosedTab(
+            id: tab.id, kind: tab.kind, url: tab.url, title: tab.title,
+            spaceID: tab.spaceID, folderID: tab.folderID,
+            isPinned: tab.isPinned, createdAt: tab.createdAt, index: idx))
+        if closedTabs.count > Self.maxClosedTabs {
+            closedTabs.removeFirst(closedTabs.count - Self.maxClosedTabs)
+        }
+    }
+
+    /// Re-create the most-recently-closed tab. Restores its URL, title,
+    /// pin state and — when they still exist — its space and folder,
+    /// reinserts it at its old slot, brings its space forward if needed,
+    /// and activates it. No-op when nothing has been closed.
+    func reopenLastClosedTab() {
+        guard let snap = closedTabs.popLast() else { return }
+
+        // The space may have been deleted since the tab closed; fall back
+        // to the current space (and drop the now-orphaned folder) rather
+        // than resurrecting into a space that's gone.
+        let spaceExists = SephrSpaceManager.shared.spaces
+            .contains { $0.id == snap.spaceID }
+        let targetSpaceID = spaceExists
+            ? snap.spaceID
+            : SephrSpaceManager.shared.currentSpace.id
+        // The folder can also have been deleted independently of its space.
+        let folder = (spaceExists ? snap.folderID : nil).flatMap { fid in
+            allFolders.first { $0.id == fid }
+        }
+
+        let tab = SephrTab(id: snap.id,
+                           kind: snap.kind,
+                           url: snap.url,
+                           title: snap.title,
+                           spaceID: targetSpaceID,
+                           folderID: folder?.id,
+                           isPinned: snap.isPinned,
+                           createdAt: snap.createdAt)
+        tab.folder = folder
+        // A reopened note finds its drawing document still on disk —
+        // closing a note never deletes its content, only the sidebar item.
+        if tab.kind == .web {
+            _ = tab.getOrCreateWebView()   // warm so the first paint is snappy
+        }
+
+        let insertAt = max(0, min(snap.index, allTabs.count))
+        allTabs.insert(tab, at: insertAt)
+
+        // Bring the tab's space forward so the reopened tab is actually
+        // visible before we focus it.
+        if spaceExists,
+           SephrSpaceManager.shared.currentSpace.id != targetSpaceID,
+           let space = SephrSpaceManager.shared.spaces
+               .first(where: { $0.id == targetSpaceID }) {
+            SephrSpaceManager.shared.switchToSpace(space)
+        }
+        // emit() rebuilds the sidebar (structural insert), then
+        // activateTab posts on the active-channel + persists.
+        emit()
+        activateTab(tab)
+    }
+
     func activateTab(_ tab: SephrTab) {
-        // Activate the target FIRST, then deactivate the others. The
-        // old tab's `.active` post must observe a model where
-        // `activeTab()` already resolves to the new tab — the URL
+        // Activate the target FIRST, then deactivate the previously-active
+        // one (we cache the ref, so it's O(1) instead of an O(N) walk over
+        // `allTabs`). The old tab's `.active` post must observe a model
+        // where `activeTab()` already resolves to the new tab — the URL
         // field re-anchors its per-tab subscription from exactly that
-        // event. (The brief two-actives overlap during the target's
-        // own post is harmless: the target's subscribers only read the
-        // target's own flag.) Re-activation posts nothing — setActive
-        // only fires on an actual flag change.
+        // event. Re-activation posts nothing — setActive only fires on an
+        // actual flag change.
         tab.lastAccessedAt = Date()
+        // Wake a slept renderer BEFORE the `.active` post — subscribers
+        // (window controller showTab, URL field) read the web view from
+        // their handlers and expect it live. wake() re-navigates to the
+        // last committed URL; it also heals a view whose creation failed
+        // at boot (isAsleep is true for that case too).
+        if let wv = tab.webView, wv.isAsleep { wv.wake() }
+        let previous = cachedActiveTab
         setActive(tab, to: true)
-        for t in allTabs where t.id != tab.id {
-            setActive(t, to: false)
+        if let previous, previous !== tab {
+            setActive(previous, to: false)
         }
         // Persist so the "which tab was selected" state survives a
         // relaunch — otherwise the previously-active tab from the
         // saved session is the one that opens, not the one the user
-        // last clicked.
-        emit(); persist()
+        // last clicked. No structure `emit()` — a plain activation
+        // isn't a structural change; the window controller listens on
+        // the lighter active-change channel for sync-to-active.
+        TabEventBus.shared.postActiveChange()
+        persist()
     }
 
     /// Single source of truth for `isActive` flips: changes the flag
@@ -98,6 +426,11 @@ final class SephrTabModel: ObservableObject {
     private func setActive(_ tab: SephrTab, to flag: Bool) {
         guard tab.isActive != flag else { return }
         tab.isActive = flag
+        if flag {
+            cachedActiveTab = tab
+        } else if cachedActiveTab === tab {
+            cachedActiveTab = nil
+        }
         TabEventBus.shared.post(TabEvent(tabID: tab.id, kind: .active))
     }
 
@@ -158,7 +491,13 @@ final class SephrTabModel: ObservableObject {
     }
 
     func activeTab() -> SephrTab? {
-        allTabs.first { $0.isActive }
+        // Fast path via cache. The walk-and-heal fallback covers the case
+        // where setActive was bypassed (legacy callers writing `.isActive`
+        // directly), and updates the cache so the next call is O(1).
+        if let cached = cachedActiveTab, cached.isActive { return cached }
+        let found = allTabs.first { $0.isActive }
+        cachedActiveTab = found
+        return found
     }
 
     // MARK: — Sibling navigation
@@ -456,7 +795,18 @@ final class SephrTabModel: ObservableObject {
 
     func freezeTabs(in space: SephrSpace) {
         for tab in allTabs where tab.spaceID == space.id {
-            tab.webView?.freeze()
+            guard let wv = tab.webView else { continue }
+            // Don't freeze a tab that's actively playing audio or holds a
+            // live media session — freeze() pairs WasHidden with
+            // SetPageFrozen, and the page-freeze halts media playback. Leaving
+            // a space should keep its music/video going (the Now Playing pill
+            // surfaces it and jumps back). The tab stays hidden+unfrozen, so
+            // its JS timers are still throttled (WasHidden) — only the audio
+            // pipeline keeps running. `tab.isAudible` is the Swift-side
+            // cache populated by `onAudioStateChange` — same value as
+            // `wv.isAudible` but no CAL bridge call.
+            if tab.isAudible || tab.isMediaControllable { continue }
+            wv.freeze()
         }
     }
 
@@ -467,11 +817,13 @@ final class SephrTabModel: ObservableObject {
     }
 
     func archiveTabs(in space: SephrSpace) {
-        for tab in allTabs where tab.spaceID == space.id {
+        var didArchive = false
+        for tab in allTabs where tab.spaceID == space.id && !tab.isArchived {
             tab.isArchived = true
             tab.webView?.freeze()
+            didArchive = true
         }
-        persist()
+        if didArchive { persist() }
     }
 
     // MARK: — Auto-archive
@@ -486,13 +838,49 @@ final class SephrTabModel: ObservableObject {
     private func runAutoArchive() {
         let days = SephrPreferences.archiveAfterDays
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
+        var didArchive = false
         for tab in allTabs
             where !tab.isPinned && !tab.isActive && !tab.isArchived
             && tab.lastAccessedAt < cutoff {
             tab.isArchived = true
             tab.webView?.freeze()
+            didArchive = true
         }
-        persist()
+        // Sleep AFTER the archive loop: any tab old enough to archive
+        // (days) is far past the sleep threshold (minutes), so the sweep
+        // immediately supersedes the freeze above by destroying the
+        // WebContents outright — freeze-then-sleep in one pass is
+        // redundant but harmless, and keeps archive semantics unchanged
+        // for tabs that are archived but still recent enough to stay live.
+        runSleepSweep()
+        // Skip the full-session JSON encode + atomic disk write when this
+        // sweep didn't actually change anything — defends the dirty-counter
+        // guard in writeNow() from being defeated by a 60s idle poke.
+        if didArchive { persist() }
+    }
+
+    /// Sleep renderers of long-hidden tabs. Exemptions: active tab,
+    /// pinned tabs, tabs playing audio, members of the current split
+    /// group. Failure mode is benign: a slept tab re-navigates to its
+    /// stored URL on activation (wake), never a blank tab.
+    private func runSleepSweep() {
+        let minutes = SephrPreferences.sleepAfterMinutes
+        guard minutes > 0 else { return }
+        let cutoff = Date().addingTimeInterval(-Double(minutes) * 60)
+        // Pre-filter cheap predicates — pinned / active / recently-touched
+        // tabs short-circuit before we ask CAL anything. `tab.isAudible`
+        // is the Swift-side cache, no bridge call. We still need
+        // `wv.isAsleep` to skip already-slept renderers because there's
+        // no per-Swift mirror of that state (it's set inside Chromium).
+        let split = SephrSplitManager.shared
+        for tab in allTabs {
+            if tab.isActive || tab.isPinned { continue }
+            if tab.lastAccessedAt >= cutoff { continue }
+            if tab.isAudible { continue }
+            if split.isInActiveSplit(tab.id) { continue }
+            guard let wv = tab.webView, !wv.isAsleep else { continue }
+            wv.sleep()
+        }
     }
 
     // MARK: — Persistence helpers
@@ -509,11 +897,14 @@ final class SephrTabModel: ObservableObject {
     /// (title/url/favicon/active/loading) post TabEvent directly and must
     /// NOT call this.
     private func emit() {
+        // Single monotonic counter — subscribers compare U64s instead of
+        // building+comparing structure-key strings. Bumps must precede
+        // postStructure() so subscribers see the new value in-handler.
+        structureGeneration &+= 1
+        invalidateLookups()
         TabEventBus.shared.postStructure()
-        // Legacy broadcast — removed in the cleanup task once all
-        // observers are migrated to TabEventBus.
-        NotificationCenter.default.post(name: .sephrTabModelChanged,
-                                         object: nil)
+        // Legacy `.sephrTabModelChanged` Notification broadcast retired —
+        // every observer migrated to TabEventBus.subscribeStructure.
     }
 
     /// Exposed so callers outside the model (e.g. SephrTab navigation

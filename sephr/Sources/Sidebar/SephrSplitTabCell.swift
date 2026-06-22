@@ -57,15 +57,25 @@ final class SephrSplitTabCell: NSView {
                 equalTo: secondaryHalf.widthAnchor),
         ])
 
-        // `refresh()` repaints favicon + title + active-dim in one go,
-        // so any event kind maps to the same cheap refresh of the half
-        // it belongs to.
+        // `refresh()` paints favicon, title, and active-dim — nothing
+        // else. Filter out `.loading`, `.audio`, `.media` since they
+        // don't change any of the three. Without the filter, an audible
+        // page playing inside a split pane was repainting the whole
+        // split cell on every Chromium OnAudioStateChanged.
+        let filter: (TabEvent) -> Bool = { e in
+            switch e.kind {
+            case .favicon, .title, .url, .active: return true
+            case .loading, .audio, .media:        return false
+            }
+        }
         primaryToken = TabEventBus.shared.subscribe(tabID: primary.id) {
-            [weak self] _ in
+            [weak self] event in
+            guard filter(event) else { return }
             self?.primaryHalf.refresh()
         }
         secondaryToken = TabEventBus.shared.subscribe(tabID: secondary.id) {
-            [weak self] _ in
+            [weak self] event in
+            guard filter(event) else { return }
             self?.secondaryHalf.refresh()
         }
     }
@@ -75,6 +85,13 @@ final class SephrSplitTabCell: NSView {
 /// One half of a `SephrSplitTabCell` — a glass pill with a tab's favicon
 /// and (truncating) title, dimmed when the tab isn't the active pane.
 final class SephrSplitHalfView: NSView {
+
+    /// Shared globe fallback — was allocated per refresh; with two halves
+    /// each subscribing to four event kinds, this could fire many times
+    /// while watching a feed.
+    private static let globeGlyph = NSImage(
+        systemSymbolName: "globe",
+        accessibilityDescription: nil)
 
     let tab: SephrTab
     var onClick: (() -> Void)?
@@ -87,13 +104,13 @@ final class SephrSplitHalfView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = DC.Radius.standard
         layer?.masksToBounds = true
 
         let glass: NSView
         if #available(macOS 26, *) {
             let g = NSGlassEffectView()
-            g.cornerRadius = 8
+            g.cornerRadius = DC.Radius.standard
             g.tintColor = nil
             glass = g
         } else {
@@ -102,7 +119,7 @@ final class SephrSplitHalfView: NSView {
             v.blendingMode = .withinWindow
             v.state = .active
             v.wantsLayer = true
-            v.layer?.cornerRadius = 8
+            v.layer?.cornerRadius = DC.Radius.standard
             v.layer?.masksToBounds = true
             glass = v
         }
@@ -146,16 +163,19 @@ final class SephrSplitHalfView: NSView {
 
     func refresh() {
         if let img = tab.favicon {
-            favicon.image = img
-            favicon.contentTintColor = nil
+            if favicon.image !== img { favicon.image = img }
+            if favicon.contentTintColor != nil { favicon.contentTintColor = nil }
         } else {
-            favicon.image = NSImage(systemSymbolName: "globe",
-                                     accessibilityDescription: nil)
-            favicon.contentTintColor = .secondaryLabelColor
+            if favicon.image !== Self.globeGlyph { favicon.image = Self.globeGlyph }
+            if favicon.contentTintColor !== NSColor.secondaryLabelColor {
+                favicon.contentTintColor = .secondaryLabelColor
+            }
         }
-        titleLabel.stringValue = tab.title.isEmpty ? tab.url : tab.title
+        let newTitle = tab.title.isEmpty ? tab.url : tab.title
+        if titleLabel.stringValue != newTitle { titleLabel.stringValue = newTitle }
         // Active pane reads brighter, the other slightly dimmed.
-        alphaValue = tab.isActive ? 1.0 : 0.7
+        let wantedAlpha: CGFloat = tab.isActive ? 1.0 : 0.7
+        if alphaValue != wantedAlpha { alphaValue = wantedAlpha }
     }
 
     override func mouseDown(with event: NSEvent) {}

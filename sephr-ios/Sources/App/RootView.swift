@@ -39,9 +39,13 @@ struct BrowserShell: View {
         ZStack {
             DC.Ink.field.ignoresSafeArea()
 
-            // Web content, full bleed — the page is the UI.
-            if let tab = engine.store.activeTab {
-                BrowserWebView(webView: engine.pool.view(for: tab))
+            // Web content, full bleed — the page is the UI. Tabs with no
+            // URL yet keep the empty-deck treatment so we don't mount a
+            // blank WKWebView over the whole screen.
+            if let tab = engine.store.activeTab, tab.hasBrowsableURL {
+                BrowserWebView(
+                    webView: engine.pool.view(for: tab),
+                    onSummarize: { engine.startSummarize() })
                     .ignoresSafeArea(edges: .bottom)
                     .id(tab.id)
             } else {
@@ -55,7 +59,7 @@ struct BrowserShell: View {
                         .dcLabel()
                         .padding(.horizontal, DC.Space.m)
                         .padding(.vertical, 6)
-                        .dcGlass(cornerRadius: 12)
+                        .dcGlass()
                     Spacer()
                 }
                 .padding(.top, DC.Space.s)
@@ -119,7 +123,32 @@ struct BrowserShell: View {
                 .transition(.opacity)
                 .zIndex(3)
             }
+
+            // SuperBrowse takeover — hero during fetch/read, then the
+            // result view once the model starts generating. Same z so
+            // they swap in place without any cross-fade artifact.
+            if let session = engine.superBrowseSession {
+                SuperBrowseContainer(session: session)
+                    .transition(.opacity)
+                    .zIndex(4)
+            }
+
+            // Summarize takeover — origami fold + summary card. Mutually
+            // exclusive with SuperBrowse at the engine level, so we'll
+            // only ever mount one of these at a time.
+            if let session = engine.summarizeSession {
+                SummarizeOverlay(
+                    session: session,
+                    onDismiss: { engine.dismissSummarize() },
+                    onExpandBack: { engine.dismissSummarize() })
+                    .transition(.opacity.combined(with: .scale(scale: 1.02)))
+                    .zIndex(4)
+            }
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.9),
+                   value: engine.superBrowseSession != nil)
+        .animation(.spring(response: 0.45, dampingFraction: 0.88),
+                   value: engine.summarizeSession != nil)
         .sheet(isPresented: $settingsPresented) { SettingsView() }
         .sheet(isPresented: $archivePresented) {
             ArchiveView { id in
@@ -141,13 +170,13 @@ struct BrowserShell: View {
             engine.openInNewTab(
                 url, incognito: engine.store.activeTab?.isIncognito ?? false)
         }
-        .onAppear {
-            // The signature move: cold-open straight into search,
-            // keyboard up — unless a page is there to resume.
-            if engine.store.activeTab == nil {
-                searchIntent = .newTab
-                searchPresented = true
-            }
+        .task(id: engine.store.activeTabID) {
+            engine.syncActiveWebView()
+        }
+        .task {
+            guard engine.store.activeTab?.hasBrowsableURL != true else { return }
+            searchIntent = .newTab
+            searchPresented = true
         }
         .preferredColorScheme(nil)
         .statusBarHidden(false)

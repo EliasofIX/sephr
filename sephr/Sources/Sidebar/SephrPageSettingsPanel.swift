@@ -86,7 +86,7 @@ struct SephrPageSettingsPanel: View {
                         .foregroundStyle(DC.Ink.ink2)
                         .frame(width: 22, height: 22)
                         .background(DC.Ink.surface,
-                                    in: RoundedRectangle(cornerRadius: 7,
+                                    in: RoundedRectangle(cornerRadius: DC.Radius.standard,
                                                          style: .continuous))
                 }
                 .buttonStyle(.plain)
@@ -130,7 +130,9 @@ struct SephrPageSettingsPanel: View {
             .foregroundStyle(DC.Ink.ink2)
             .padding(.horizontal, DC.Space.m)
             .padding(.vertical, DC.Space.s)
-            .background(DC.Ink.surface, in: Capsule(style: .continuous))
+            .background(DC.Ink.surface,
+                        in: RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                             style: .continuous))
 
             Spacer()
 
@@ -175,10 +177,11 @@ private struct PageActionLabel: View {
             .foregroundStyle(DC.Ink.ink)
             .frame(width: 46, height: 38)
             .background(DC.Ink.surface,
-                        in: RoundedRectangle(cornerRadius: 10,
+                        in: RoundedRectangle(cornerRadius: DC.Radius.standard,
                                              style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                 style: .continuous)
                     .strokeBorder(DC.Ink.hairline,
                                   lineWidth: DC.hairlineWidth))
     }
@@ -223,11 +226,12 @@ final class SephrExtensionsModel: ObservableObject {
 
     @Published var items: [CALExtension] = []
     private let store: CALExtensions
+    private var observerToken: Any?
 
     init(profileID: String) {
         store = CALExtensions.sharedInstance(forProfile: profileID)
         items = store.installed()
-        store.onExtensionsChanged = { [weak self] in
+        observerToken = store.addChangeObserver { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.items = self.store.installed()
@@ -235,15 +239,23 @@ final class SephrExtensionsModel: ObservableObject {
         }
     }
 
+    deinit {
+        store.removeChangeObserver(observerToken)
+    }
+
     func setEnabled(_ id: String, _ on: Bool) {
+        // `store.setEnabled` triggers the live change observer registered
+        // above, which posts an `installed()` re-read on the next runloop
+        // turn. The synchronous re-read we used to do here was redundant
+        // (and meant every toggle hit the bridge twice).
         store.setEnabled(id, enabled: on)
-        items = store.installed()
     }
 
     func install(path: String) {
         do {
+            // Same as above — let the change observer drive the items
+            // refresh after the installer fires its notification.
             try store.installCRX(atPath: path)
-            items = store.installed()
         } catch {
             NSSound.beep()
         }

@@ -620,9 +620,12 @@ struct SephrNoteCanvas: View {
         // keep `toolbarAppeared = true` and skip the entry animation.
         return Group {
             if #available(macOS 26.0, *) {
-                bar.glassEffect(.regular, in: Capsule())
+                bar.glassEffect(.regular,
+                                in: RoundedRectangle(
+                                    cornerRadius: DC.Radius.standard,
+                                    style: .continuous))
             } else {
-                bar.dcGlass(cornerRadius: 22)
+                bar.dcGlass()
             }
         }
         .opacity(toolbarAppeared ? 1 : 0)

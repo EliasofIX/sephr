@@ -112,7 +112,7 @@ struct SephrCommandBarView: View {
 
     /// Pill corner radius — matched by the focus-ring overlay so the
     /// glow stays seated on the glass edge.
-    private static let pillCorner: CGFloat = 18
+    private static let pillCorner: CGFloat = DC.Radius.standard
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -195,7 +195,7 @@ struct SephrCommandBarView: View {
 /// glass renders with Apple's clean, subtle floating edge and no artifact.
 /// Falls back to `.ultraThinMaterial` only on pre-26 systems that lack glass.
 struct LiquidGlassPanel: ViewModifier {
-    var cornerRadius: CGFloat = 18
+    var cornerRadius: CGFloat = DC.Radius.standard
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius,
@@ -265,11 +265,12 @@ struct CommandResultRow: View {
         }
         .buttonStyle(.plain)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: DC.Radius.standard, style: .continuous)
                 .fill(hovering
                       ? DC.Ink.hairline
                       : DC.Ink.surface.opacity(0.5)))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                    style: .continuous))
         // Slight lift on hover so the active row separates from siblings
         // without changing the row's hit-target box.
         .scaleEffect(hovering ? 1.008 : 1)

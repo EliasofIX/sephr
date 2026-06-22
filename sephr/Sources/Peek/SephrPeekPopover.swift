@@ -29,7 +29,7 @@ final class SephrPeekPopover: NSPopover {
 
         imageView.frame = NSRect(x: 12, y: 52, width: 376, height: 236)
         imageView.wantsLayer = true
-        imageView.layer?.cornerRadius = 8
+        imageView.layer?.cornerRadius = DC.Radius.standard
         imageView.layer?.masksToBounds = true
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imageView.autoresizingMask = [.width, .height]

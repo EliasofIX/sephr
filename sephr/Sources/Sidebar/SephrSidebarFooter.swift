@@ -1,13 +1,27 @@
 import AppKit
 import SwiftUI
 
+/// Shared hit-target + glyph box for the footer row so the downloads
+/// chip, space pips, and "+" read as one aligned toolbar.
+enum SephrSidebarFooterMetrics {
+    static let controlSize: CGFloat = 28
+    /// Every SF Symbol scales into this box so thin glyphs ("+") and
+    /// airy ones ("circle.hexagongrid") match the filled circle download
+    /// icon in perceived height.
+    static let iconBoxSize: CGFloat = 16
+    /// Nudge glyphs up to leave room for the active-space pip dot.
+    static let iconCenterYOffset: CGFloat = -3
+    static let symbolPointSize: CGFloat = 12
+}
+
 final class SephrSidebarFooter: NSView {
     var onCreateSpace:  (() -> Void)?
     var onCreateFolder: (() -> Void)?
     var onCreateTab:    (() -> Void)?
+    var onCreateNote:   (() -> Void)?
     var onSelectSpace:  ((SephrSpace) -> Void)?
 
-    private let plusButton = SephrHoverButton()
+    private let plusButton = SephrFooterPlusButton()
     private let downloadsButton = SephrDownloadsButton()
     private let spaceSwitcher = SephrSpaceSwitcherFooter()
     private var downloadsPopover: NSPopover?
@@ -16,12 +30,7 @@ final class SephrSidebarFooter: NSView {
         super.init(frame: frame)
         wantsLayer = true
 
-        plusButton.image = NSImage(systemSymbolName: "plus",
-                                   accessibilityDescription: nil)
-        plusButton.symbolConfiguration = .init(pointSize: 12, weight: .medium)
-        plusButton.contentTintColor = NSColor.secondaryLabelColor
-        plusButton.target = self
-        plusButton.action = #selector(showCreateMenu)
+        plusButton.onClicked = { [weak self] in self?.showCreateMenu() }
         addSubview(plusButton)
 
         downloadsButton.onClicked = { [weak self] in
@@ -37,15 +46,19 @@ final class SephrSidebarFooter: NSView {
             plusButton.trailingAnchor.constraint(
                 equalTo: trailingAnchor, constant: -14),
             plusButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            plusButton.widthAnchor.constraint(equalToConstant: 26),
-            plusButton.heightAnchor.constraint(equalToConstant: 26),
+            plusButton.widthAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.controlSize),
+            plusButton.heightAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.controlSize),
 
             // Downloads on the bottom-left, same row as the "+".
             downloadsButton.leadingAnchor.constraint(
                 equalTo: leadingAnchor, constant: 14),
             downloadsButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            downloadsButton.widthAnchor.constraint(equalToConstant: 26),
-            downloadsButton.heightAnchor.constraint(equalToConstant: 26),
+            downloadsButton.widthAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.controlSize),
+            downloadsButton.heightAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.controlSize),
 
             // Space switcher fills the middle, between downloads and
             // the "+". Centered on its own to keep the active space
@@ -55,7 +68,8 @@ final class SephrSidebarFooter: NSView {
             spaceSwitcher.trailingAnchor.constraint(
                 equalTo: plusButton.leadingAnchor, constant: -6),
             spaceSwitcher.centerYAnchor.constraint(equalTo: centerYAnchor),
-            spaceSwitcher.heightAnchor.constraint(equalToConstant: 28),
+            spaceSwitcher.heightAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.controlSize),
         ])
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -68,6 +82,11 @@ final class SephrSidebarFooter: NSView {
                              keyEquivalent: "t")
         tab.target = self
 
+        let note = NSMenuItem(title: "New Note",
+                              action: #selector(menuNewNote),
+                              keyEquivalent: "")
+        note.target = self
+
         let folder = NSMenuItem(title: "New Folder",
                                 action: #selector(menuNewFolder),
                                 keyEquivalent: "")
@@ -79,6 +98,7 @@ final class SephrSidebarFooter: NSView {
         space.target = self
 
         menu.addItem(tab)
+        menu.addItem(note)
         menu.addItem(folder)
         menu.addItem(.separator())
         menu.addItem(space)
@@ -94,6 +114,7 @@ final class SephrSidebarFooter: NSView {
     }
 
     @objc private func menuNewTab()    { onCreateTab?() }
+    @objc private func menuNewNote()   { onCreateNote?() }
     @objc private func menuNewFolder() { onCreateFolder?() }
     @objc private func menuNewSpace()  { onCreateSpace?() }
 
@@ -112,5 +133,91 @@ final class SephrSidebarFooter: NSView {
                      of: downloadsButton,
                      preferredEdge: .maxY)
         downloadsPopover = popover
+    }
+}
+
+// MARK: — Footer "+"
+
+private final class SephrFooterPlusButton: NSView {
+    var onClicked: (() -> Void)?
+
+    private let icon = NSImageView()
+    private var hovered = false
+    private var pressed = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = DC.Radius.standard
+        toolTip = "New"
+
+        SephrSidebarFooterMetrics.configureFooterIcon(
+            icon, symbolName: "plus", accessibilityDescription: "New")
+        addSubview(icon)
+        NSLayoutConstraint.activate([
+            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+            icon.centerYAnchor.constraint(
+                equalTo: centerYAnchor,
+                constant: SephrSidebarFooterMetrics.iconCenterYOffset),
+            icon.widthAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.iconBoxSize),
+            icon.heightAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.iconBoxSize),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow,
+                      .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovered = true
+        refreshBackground()
+    }
+    override func mouseExited(with event: NSEvent) {
+        hovered = false
+        refreshBackground()
+    }
+    override func mouseDown(with event: NSEvent) {
+        pressed = true
+        refreshBackground()
+    }
+    override func mouseUp(with event: NSEvent) {
+        pressed = false
+        refreshBackground()
+        if bounds.contains(convert(event.locationInWindow, from: nil)) {
+            onClicked?()
+        }
+    }
+
+    private func refreshBackground() {
+        let alpha: CGFloat = pressed ? 0.18 : (hovered ? 0.10 : 0.0)
+        layer?.backgroundColor = NSColor.white
+            .withAlphaComponent(alpha).cgColor
+    }
+}
+
+extension SephrSidebarFooterMetrics {
+    static func configureFooterIcon(
+        _ imageView: NSImageView,
+        symbolName: String,
+        accessibilityDescription: String?
+    ) {
+        imageView.image = NSImage(
+            systemSymbolName: symbolName,
+            accessibilityDescription: accessibilityDescription)
+        imageView.symbolConfiguration = .init(
+            pointSize: symbolPointSize, weight: .medium)
+        imageView.contentTintColor = NSColor.secondaryLabelColor
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.translatesAutoresizingMaskIntoConstraints = false
     }
 }

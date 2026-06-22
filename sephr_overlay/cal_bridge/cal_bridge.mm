@@ -8,14 +8,17 @@
 
 #include "chrome/sephr/cal_bridge/cal_bridge.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -28,14 +31,20 @@
 #include "chrome/sephr/cal_bridge/cal_tab_window_controller.h"
 #include "chrome/sephr/cal_bridge/sephr_modal_dialog_manager_delegate.h"
 #include "chrome/browser/sephr_browser_main_extra_parts.h"
+#include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/tab_helpers.h"
+#include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_service.h"
+#include "third_party/blink/public/common/context_menu_data/edit_flags.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "content/public/browser/navigation_controller.h"
 #include "ui/base/window_open_disposition.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/media_session.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
@@ -47,6 +56,9 @@
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/referrer.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "services/media_session/public/cpp/media_metadata.h"
+#include "services/media_session/public/mojom/media_session.mojom.h"
 #include "content/public/browser/context_menu_params.h"
 #include "third_party/blink/public/common/context_menu_data/untrustworthy_context_menu_params.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom-shared.h"
@@ -77,12 +89,34 @@ char* DupCString(const std::string& s) {
 // build stashes its URL string in `representedObject`; the action
 // selectors read it and either copy to the pasteboard, or invoke the
 // per-holder "new tab" C callback the embedder registered.
+// Per-item action carrier. We attach one of these to each menu item via
+// `representedObject` and the shared `runAction:` selector invokes it.
+// This lets HandleContextMenu compose Chrome-equivalent items (cut, paste,
+// view source, inspect, search, save link, save page, navigate…) without
+// adding a dedicated @selector per command.
+@interface CALMenuAction : NSObject
+@property (nonatomic, copy) void (^block)(void);
++ (instancetype)withBlock:(void (^)(void))block;
+@end
+
+@implementation CALMenuAction
++ (instancetype)withBlock:(void (^)(void))block {
+    CALMenuAction* a = [[CALMenuAction alloc] init];
+    a.block = block;
+    return a;
+}
+@end
+
 @interface CALContextMenuTarget : NSObject
 @property (nonatomic, assign) SephriumNewTabRequestCallback newTabCb;
 @property (nonatomic, assign) void* newTabCtx;
 @end
 
 @implementation CALContextMenuTarget
+- (void)runAction:(NSMenuItem*)item {
+    CALMenuAction* a = item.representedObject;
+    if (a.block) a.block();
+}
 - (void)openInNewTab:(NSMenuItem*)item {
     NSString* url = item.representedObject;
     if (self.newTabCb && url.length) {
@@ -114,8 +148,10 @@ namespace {
 // receives nothing. content_shell does exactly the same thing (see
 // content/shell/browser/shell.cc:Shell::Shell which calls
 // web_contents_->SetDelegate(this)).
-class SephriumWebContentsHolder : public content::WebContentsObserver,
-                                  public content::WebContentsDelegate {
+class SephriumWebContentsHolder
+    : public content::WebContentsObserver,
+      public content::WebContentsDelegate,
+      public media_session::mojom::MediaSessionObserver {
  public:
   // Variant 1: take ownership of a freestanding WebContents (CAL-created).
   explicit SephriumWebContentsHolder(
@@ -214,6 +250,71 @@ class SephriumWebContentsHolder : public content::WebContentsObserver,
     loading_ctx_ = ctx;
   }
 
+  void SetAudioStateCallback(SephriumAudioStateCallback cb, void* ctx) {
+    audio_callback_ = cb;
+    audio_ctx_ = ctx;
+  }
+
+  // Registers the embedder's media-session callback and (on first use)
+  // subscribes this holder to the WebContents' MediaSession. The mojo
+  // AddObserver flushes the session's current info/metadata/actions to a new
+  // observer, so the embedder converges on the live state without polling;
+  // the immediate Fire below just hands it the cached snapshot synchronously
+  // (all-default before the first mojo delivery).
+  void SetMediaSessionCallback(SephriumMediaSessionCallback cb, void* ctx) {
+    media_callback_ = cb;
+    media_ctx_ = ctx;
+    if (!cb) {
+      return;
+    }
+    if (!media_observer_receiver_.is_bound() && contents_ptr_) {
+      content::MediaSession::Get(contents_ptr_)
+          ->AddObserver(media_observer_receiver_.BindNewPipeAndPassRemote());
+    }
+    FireMediaSessionState();
+  }
+
+  // media_session::mojom::MediaSessionObserver:
+  void MediaSessionInfoChanged(
+      media_session::mojom::MediaSessionInfoPtr info) override {
+    if (!info) {
+      return;
+    }
+    media_is_controllable_ = info->is_controllable;
+    media_is_playing_ =
+        info->playback_state ==
+        media_session::mojom::MediaPlaybackState::kPlaying;
+    FireMediaSessionState();
+  }
+  void MediaSessionMetadataChanged(
+      const std::optional<media_session::MediaMetadata>& metadata) override {
+    media_title_ =
+        metadata ? base::UTF16ToUTF8(metadata->title) : std::string();
+    media_artist_ =
+        metadata ? base::UTF16ToUTF8(metadata->artist) : std::string();
+    media_source_title_ =
+        metadata ? base::UTF16ToUTF8(metadata->source_title) : std::string();
+    FireMediaSessionState();
+  }
+  void MediaSessionActionsChanged(
+      const std::vector<media_session::mojom::MediaSessionAction>& actions)
+      override {
+    using media_session::mojom::MediaSessionAction;
+    media_can_prev_ =
+        std::find(actions.begin(), actions.end(),
+                  MediaSessionAction::kPreviousTrack) != actions.end();
+    media_can_next_ =
+        std::find(actions.begin(), actions.end(),
+                  MediaSessionAction::kNextTrack) != actions.end();
+    FireMediaSessionState();
+  }
+  void MediaSessionImagesChanged(
+      const base::flat_map<media_session::mojom::MediaSessionImageType,
+                           std::vector<media_session::MediaImage>>&) override {
+  }
+  void MediaSessionPositionChanged(
+      const std::optional<media_session::MediaPosition>&) override {}
+
   void SetNewTabRequestCallback(SephriumNewTabRequestCallback cb, void* ctx) {
     new_tab_callback_ = cb;
     new_tab_ctx_ = ctx;
@@ -287,6 +388,10 @@ class SephriumWebContentsHolder : public content::WebContentsObserver,
     VLOG(1) << "[sephr/bridge/obs] DidStopLoading";
     if (loading_callback_) loading_callback_(loading_ctx_, 0);
   }
+  void OnAudioStateChanged(bool audible) override {
+    VLOG(1) << "[sephr/bridge/obs] OnAudioStateChanged audible=" << audible;
+    if (audio_callback_) audio_callback_(audio_ctx_, audible ? 1 : 0);
+  }
   void RenderFrameCreated(content::RenderFrameHost* rfh) override {
     VLOG(1) << "[sephr/bridge/obs] RenderFrameCreated rfh=" << rfh
             << " IsLive="
@@ -317,6 +422,9 @@ class SephriumWebContentsHolder : public content::WebContentsObserver,
     nav_callback_ = nullptr;
     favicon_callback_ = nullptr;
     loading_callback_ = nullptr;
+    audio_callback_ = nullptr;
+    media_callback_ = nullptr;
+    media_observer_receiver_.reset();
     new_tab_callback_ = nullptr;
     target_url_callback_ = nullptr;
     popup_request_callback_ = nullptr;
@@ -502,8 +610,26 @@ class SephriumWebContentsHolder : public content::WebContentsObserver,
     target.newTabCb = new_tab_callback_;
     target.newTabCtx = new_tab_ctx_;
 
-    auto addItem = ^(NSString* title, SEL selector,
-                     NSString* represented) {
+    // popUpContextMenu blocks until the menu is dismissed, so it's safe to
+    // capture raw pointers to the WebContents and the RenderFrameHost — they
+    // outlive the menu's lifetime.
+    content::WebContents* wc = contents_ptr_;
+    content::RenderFrameHost* rfh = &render_frame_host;
+    GURL frame_url = params.frame_url;
+    auto referrer_policy = params.referrer_policy;
+    SephriumNewTabRequestCallback new_tab_cb = new_tab_callback_;
+    void* new_tab_cb_ctx = new_tab_ctx_;
+
+    auto addAction = ^(NSString* title, void (^block)(void)) {
+      NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
+                                                    action:@selector(runAction:)
+                                             keyEquivalent:@""];
+      item.target = target;
+      item.representedObject = [CALMenuAction withBlock:block];
+      [menu addItem:item];
+      return item;
+    };
+    auto addItem = ^(NSString* title, SEL selector, NSString* represented) {
       NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
                                                     action:selector
                                              keyEquivalent:@""];
@@ -511,76 +637,180 @@ class SephriumWebContentsHolder : public content::WebContentsObserver,
       item.representedObject = represented;
       [menu addItem:item];
     };
+    auto addSeparator = ^{
+      [menu addItem:[NSMenuItem separatorItem]];
+    };
+
+    // "Save … to…" — hands the resource to Chromium's own
+    // WebContents::SaveFrame (the exact path behind Chrome's "Save image
+    // as…"). It already prompts for a destination, follows redirects, and
+    // handles http/data/blob URLs, cookies and referrer for us.
+    auto addSaveItem = ^(NSString* title, const GURL& srcURL) {
+      GURL url = srcURL;
+      content::Referrer referrer = content::Referrer::SanitizeForRequest(
+          url, content::Referrer(frame_url.GetAsReferrer(), referrer_policy));
+      addAction(title, ^{ wc->SaveFrame(url, referrer, rfh); });
+    };
+
+    // Search the web — open a new tab with the user's default search engine.
+    // Falls back to Google if the TemplateURLService isn't ready yet.
+    auto openSearch = ^(const std::u16string& query) {
+      std::string search_url;
+      Profile* profile = Profile::FromBrowserContext(wc->GetBrowserContext());
+      if (profile) {
+        TemplateURLService* svc =
+            TemplateURLServiceFactory::GetForProfile(profile);
+        if (svc) {
+          const TemplateURL* def = svc->GetDefaultSearchProvider();
+          if (def) {
+            TemplateURLRef::SearchTermsArgs args(query);
+            search_url = def->url_ref().ReplaceSearchTerms(
+                args, svc->search_terms_data());
+          }
+        }
+      }
+      if (search_url.empty()) {
+        std::string q = base::UTF16ToUTF8(query);
+        NSString* qs = [NSString stringWithUTF8String:q.c_str()];
+        NSString* esc = [qs stringByAddingPercentEncodingWithAllowedCharacters:
+                            [NSCharacterSet URLQueryAllowedCharacterSet]];
+        search_url = std::string("https://www.google.com/search?q=") +
+                     (esc ? esc.UTF8String : "");
+      }
+      if (new_tab_cb) new_tab_cb(new_tab_cb_ctx, search_url.c_str());
+    };
+
+    bool has_link  = params.link_url.is_valid();
+    bool has_image = params.src_url.is_valid() &&
+                     params.media_type ==
+                         blink::mojom::ContextMenuDataMediaType::kImage;
+    bool has_video = params.src_url.is_valid() &&
+                     params.media_type ==
+                         blink::mojom::ContextMenuDataMediaType::kVideo;
+    bool has_audio = params.src_url.is_valid() &&
+                     params.media_type ==
+                         blink::mojom::ContextMenuDataMediaType::kAudio;
+    bool has_media = has_image || has_video || has_audio;
+    bool has_selection = !params.selection_text.empty();
+    bool is_editable = params.is_editable;
 
     // Link items
-    if (params.link_url.is_valid()) {
+    if (has_link) {
       NSString* link = [NSString stringWithUTF8String:
                                      params.link_url.spec().c_str()];
       addItem(@"Open Link in New Tab",
               @selector(openInNewTab:), link);
-      addItem(@"Copy Link", @selector(copyURL:), link);
-      [menu addItem:[NSMenuItem separatorItem]];
+      addSaveItem(@"Save Link As…", params.link_url);
+      addItem(@"Copy Link Address", @selector(copyURL:), link);
+      addSeparator();
     }
 
     // Image items
-    if (params.src_url.is_valid() &&
-        params.media_type ==
-            blink::mojom::ContextMenuDataMediaType::kImage) {
+    if (has_image) {
       NSString* src = [NSString stringWithUTF8String:
                                      params.src_url.spec().c_str()];
       addItem(@"Open Image in New Tab",
               @selector(openInNewTab:), src);
+      addSaveItem(@"Save Image As…", params.src_url);
       addItem(@"Copy Image Address", @selector(copyURL:), src);
-      [menu addItem:[NSMenuItem separatorItem]];
+      addSeparator();
     }
 
     // Video / audio
-    if (params.src_url.is_valid() &&
-        (params.media_type ==
-             blink::mojom::ContextMenuDataMediaType::kVideo ||
-         params.media_type ==
-             blink::mojom::ContextMenuDataMediaType::kAudio)) {
+    if (has_video || has_audio) {
       NSString* src = [NSString stringWithUTF8String:
                                      params.src_url.spec().c_str()];
       addItem(@"Open Media in New Tab",
               @selector(openInNewTab:), src);
+      addSaveItem(has_video ? @"Save Video As…" : @"Save Audio As…",
+                  params.src_url);
       addItem(@"Copy Media Address", @selector(copyURL:), src);
-      [menu addItem:[NSMenuItem separatorItem]];
+      addSeparator();
     }
 
-    // Selected text
-    if (!params.selection_text.empty()) {
+    // Selected text — Copy + Search.
+    if (has_selection && !is_editable) {
       NSString* sel = [NSString stringWithUTF8String:
                                      base::UTF16ToUTF8(
                                          params.selection_text).c_str()];
       addItem(@"Copy", @selector(copyText:), sel);
-      [menu addItem:[NSMenuItem separatorItem]];
+      std::u16string q = params.selection_text;
+      NSString* preview = sel.length > 24
+          ? [[sel substringToIndex:24] stringByAppendingString:@"…"]
+          : sel;
+      NSString* title = [NSString stringWithFormat:@"Search the Web for “%@”",
+                                                   preview];
+      addAction(title, ^{ openSearch(q); });
+      addSeparator();
     }
 
-    // Navigation footer — always available.
-    NSMenuItem* back = [[NSMenuItem alloc] initWithTitle:@"Back"
-                                                  action:nil
-                                           keyEquivalent:@""];
-    back.enabled = contents_ptr_->GetController().CanGoBack();
-    if (back.enabled) {
-      back.target = target;
-      back.action = @selector(noop:);  // placeholder
+    // Editable text field — Undo/Redo/Cut/Copy/Paste/Select All.
+    if (is_editable) {
+      using blink::ContextMenuDataEditFlags;
+      int f = params.edit_flags;
+      bool any_undo = (f & ContextMenuDataEditFlags::kCanUndo) ||
+                      (f & ContextMenuDataEditFlags::kCanRedo);
+      if (any_undo) {
+        NSMenuItem* undo = addAction(@"Undo", ^{ wc->Undo(); });
+        undo.enabled = (f & ContextMenuDataEditFlags::kCanUndo) != 0;
+        NSMenuItem* redo = addAction(@"Redo", ^{ wc->Redo(); });
+        redo.enabled = (f & ContextMenuDataEditFlags::kCanRedo) != 0;
+        addSeparator();
+      }
+      NSMenuItem* cut = addAction(@"Cut", ^{ wc->Cut(); });
+      cut.enabled = (f & ContextMenuDataEditFlags::kCanCut) != 0;
+      NSMenuItem* cp = addAction(@"Copy", ^{ wc->Copy(); });
+      cp.enabled = (f & ContextMenuDataEditFlags::kCanCopy) != 0;
+      NSMenuItem* pst = addAction(@"Paste", ^{ wc->Paste(); });
+      pst.enabled = (f & ContextMenuDataEditFlags::kCanPaste) != 0;
+      NSMenuItem* pms =
+          addAction(@"Paste and Match Style", ^{ wc->PasteAndMatchStyle(); });
+      pms.enabled = (f & ContextMenuDataEditFlags::kCanPaste) != 0;
+      NSMenuItem* sa = addAction(@"Select All", ^{ wc->SelectAll(); });
+      sa.enabled = (f & ContextMenuDataEditFlags::kCanSelectAll) != 0;
+      addSeparator();
     }
-    NSMenuItem* fwd = [[NSMenuItem alloc] initWithTitle:@"Forward"
-                                                 action:nil
-                                          keyEquivalent:@""];
-    fwd.enabled = contents_ptr_->GetController().CanGoForward();
 
-    // Defer back/forward/reload to a small inline block target — we
-    // keep them visible but disabled when the controller has nothing
-    // to navigate.
-    [menu addItem:back];
-    [menu addItem:fwd];
+    // Page items — only when none of the above clusters apply (matches
+    // Chrome's behavior: right-clicking blank page vs a link shows
+    // navigation, source, etc.).
+    if (!has_link && !has_media && !has_selection && !is_editable) {
+      NSMenuItem* back = addAction(@"Back", ^{
+        auto& c = wc->GetController();
+        if (c.CanGoBack()) c.GoBack();
+      });
+      back.enabled = wc->GetController().CanGoBack();
+      NSMenuItem* fwd = addAction(@"Forward", ^{
+        auto& c = wc->GetController();
+        if (c.CanGoForward()) c.GoForward();
+      });
+      fwd.enabled = wc->GetController().CanGoForward();
+      addAction(@"Reload", ^{
+        wc->GetController().Reload(content::ReloadType::NORMAL,
+                                   /*check_for_repost=*/false);
+      });
+      addSeparator();
+      addAction(@"Save Page As…", ^{
+        GURL url = wc->GetLastCommittedURL();
+        wc->SaveFrame(url, content::Referrer(), wc->GetPrimaryMainFrame());
+      });
+      // view-source: prefix opens the page's source in a new tab. Chromium's
+      // navigation stack treats the scheme specially.
+      addAction(@"View Page Source", ^{
+        GURL url = wc->GetLastCommittedURL();
+        if (!url.is_valid()) return;
+        std::string vs = std::string("view-source:") + url.spec();
+        if (new_tab_cb) new_tab_cb(new_tab_cb_ctx, vs.c_str());
+      });
+      addSeparator();
+    }
 
-    NSMenuItem* reload = [[NSMenuItem alloc] initWithTitle:@"Reload"
-                                                     action:nil
-                                              keyEquivalent:@""];
-    [menu addItem:reload];
+    // Inspect — always present as the trailing item, matching Chrome.
+    int inspect_x = params.x;
+    int inspect_y = params.y;
+    addAction(@"Inspect", ^{
+      DevToolsWindow::InspectElement(rfh, inspect_x, inspect_y);
+    });
 
     // Strong-retain `target` for the lifetime of the menu so the
     // menu items' weak target references stay valid until selection.
@@ -680,6 +910,22 @@ class SephriumWebContentsHolder : public content::WebContentsObserver,
     nav_callback_(nav_ctx_, url.c_str(), title.c_str());
   }
 
+  // Push the merged media-session snapshot (info + metadata + actions arrive
+  // via separate observer methods) to the embedder in one call.
+  void FireMediaSessionState() {
+    if (!media_callback_) {
+      return;
+    }
+    media_callback_(media_ctx_,
+                    media_is_controllable_ ? 1 : 0,
+                    media_is_playing_ ? 1 : 0,
+                    media_title_.c_str(),
+                    media_artist_.c_str(),
+                    media_source_title_.c_str(),
+                    media_can_prev_ ? 1 : 0,
+                    media_can_next_ ? 1 : 0);
+  }
+
   std::unique_ptr<content::WebContents> owned_contents_;
   raw_ptr<content::WebContents> contents_ptr_ = nullptr;
   std::unique_ptr<sephr::SephrModalDialogManagerDelegate>
@@ -691,6 +937,20 @@ class SephriumWebContentsHolder : public content::WebContentsObserver,
   void* favicon_ctx_ = nullptr;
   SephriumLoadingCallback loading_callback_ = nullptr;
   void* loading_ctx_ = nullptr;
+  SephriumAudioStateCallback audio_callback_ = nullptr;
+  void* audio_ctx_ = nullptr;
+  SephriumMediaSessionCallback media_callback_ = nullptr;
+  void* media_ctx_ = nullptr;
+  mojo::Receiver<media_session::mojom::MediaSessionObserver>
+      media_observer_receiver_{this};
+  // Last-known media-session facets, merged into one embedder callback.
+  bool media_is_controllable_ = false;
+  bool media_is_playing_ = false;
+  bool media_can_prev_ = false;
+  bool media_can_next_ = false;
+  std::string media_title_;
+  std::string media_artist_;
+  std::string media_source_title_;
   SephriumNewTabRequestCallback new_tab_callback_ = nullptr;
   void* new_tab_ctx_ = nullptr;
   SephriumTargetURLCallback target_url_callback_ = nullptr;
@@ -919,6 +1179,21 @@ extern "C" void SephriumWebContentsReload(SephriumWebContentsRef ref) {
       content::ReloadType::NORMAL, /*check_for_repost=*/false);
 }
 
+extern "C" void SephriumWebContentsReloadBypassingCache(
+    SephriumWebContentsRef ref) {
+  if (!ref) return;
+  content::WebContents* c = AsHolder(ref)->contents();
+  if (!c) return;
+  // Same empty-controller guard as SephriumWebContentsReload: Reload() on a
+  // controller with no committed entry DCHECKs inside
+  // NavigationControllerImpl::Reload. BYPASSING_CACHE is the reload Chromium
+  // binds to Cmd+Shift+R (IDC_RELOAD_BYPASSING_CACHE) — a hard reload that
+  // revalidates the main resource and its subresources against the network.
+  if (c->GetController().GetEntryCount() == 0) return;
+  c->GetController().Reload(
+      content::ReloadType::BYPASSING_CACHE, /*check_for_repost=*/false);
+}
+
 extern "C" void SephriumWebContentsStop(SephriumWebContentsRef ref) {
   if (!ref) return;
   content::WebContents* c = AsHolder(ref)->contents();
@@ -1012,6 +1287,21 @@ extern "C" int SephriumWebContentsIsAudible(SephriumWebContentsRef ref) {
   return c->IsCurrentlyAudible() ? 1 : 0;
 }
 
+extern "C" int SephriumWebContentsIsAudioMuted(SephriumWebContentsRef ref) {
+  if (!ref) return 0;
+  content::WebContents* c = AsHolder(ref)->contents();
+  if (!c) return 0;
+  return c->IsAudioMuted() ? 1 : 0;
+}
+
+extern "C" void SephriumWebContentsSetAudioMuted(SephriumWebContentsRef ref,
+                                                 int muted) {
+  if (!ref) return;
+  content::WebContents* c = AsHolder(ref)->contents();
+  if (!c) return;
+  c->SetAudioMuted(muted != 0);
+}
+
 extern "C" void SephriumWebContentsSetNavCallback(SephriumWebContentsRef ref,
                                                  SephriumNavCallback cb,
                                                  void* ctx) {
@@ -1033,6 +1323,56 @@ extern "C" void SephriumWebContentsSetLoadingCallback(
     void* ctx) {
   if (!ref) return;
   AsHolder(ref)->SetLoadingCallback(cb, ctx);
+}
+
+extern "C" void SephriumWebContentsSetAudioStateCallback(
+    SephriumWebContentsRef ref,
+    SephriumAudioStateCallback cb,
+    void* ctx) {
+  if (!ref) return;
+  AsHolder(ref)->SetAudioStateCallback(cb, ctx);
+}
+
+extern "C" void SephriumWebContentsSetMediaSessionCallback(
+    SephriumWebContentsRef ref,
+    SephriumMediaSessionCallback cb,
+    void* ctx) {
+  if (!ref) return;
+  AsHolder(ref)->SetMediaSessionCallback(cb, ctx);
+}
+
+// MediaSession::Get never returns null (it creates the session on demand),
+// and every transport call below is a documented no-op when the page has no
+// active/controllable media — so these are safe to call unconditionally.
+extern "C" void SephriumWebContentsMediaResume(SephriumWebContentsRef ref) {
+  if (!ref) return;
+  content::WebContents* c = AsHolder(ref)->contents();
+  if (!c) return;
+  content::MediaSession::Get(c)->Resume(
+      content::MediaSession::SuspendType::kUI);
+}
+
+extern "C" void SephriumWebContentsMediaSuspend(SephriumWebContentsRef ref) {
+  if (!ref) return;
+  content::WebContents* c = AsHolder(ref)->contents();
+  if (!c) return;
+  content::MediaSession::Get(c)->Suspend(
+      content::MediaSession::SuspendType::kUI);
+}
+
+extern "C" void SephriumWebContentsMediaNextTrack(SephriumWebContentsRef ref) {
+  if (!ref) return;
+  content::WebContents* c = AsHolder(ref)->contents();
+  if (!c) return;
+  content::MediaSession::Get(c)->NextTrack();
+}
+
+extern "C" void SephriumWebContentsMediaPreviousTrack(
+    SephriumWebContentsRef ref) {
+  if (!ref) return;
+  content::WebContents* c = AsHolder(ref)->contents();
+  if (!c) return;
+  content::MediaSession::Get(c)->PreviousTrack();
 }
 
 extern "C" void SephriumWebContentsSetNewTabRequestCallback(

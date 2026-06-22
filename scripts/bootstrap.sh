@@ -92,7 +92,9 @@ if [ ! -d src/.git ]; then
         # Skip the Chromium-internal massive symlink farm and node_modules.
         # We only need pristine baseline for 3-way merge; if a patch touches
         # an ignored path it falls through to the wiggle/patch tier.
-        printf 'out/\n.cipd/\n.cache/\n' > .git/info/exclude
+        # chrome/sephr is the Sephr overlay symlink (section 4b) — exclude
+        # it so the overlay never shows up in src/ git status.
+        printf 'out/\n.cipd/\n.cache/\nchrome/sephr\n' > .git/info/exclude
         # Use -c so commit metadata doesn't depend on whatever the host
         # user has globally configured.
         git -c user.email=bootstrap@sephr -c user.name=sephr-bootstrap \
@@ -179,18 +181,33 @@ if [ ! -d "$SRC/third_party/google_toolbox_for_mac/src/.git" ]; then
     git -C "$SRC/third_party/google_toolbox_for_mac/src" checkout "$GTM_REV"
 fi
 
+# ── 4c — uBlock Origin (built-in component extension) ─────────────────────
+bash scripts/fetch_ublock_origin.sh
+python3 scripts/generate_ios_ublock_rules.py
+
 # ── 4b — Sephr source overlay ──────────────────────────────────────────────
 # CAL bridge sources live OUTSIDE the Chromium tree (sephr_overlay/) so a
 # Chromium bump never touches our source layout. Drop them into the build
-# tree as a symlink at //sephr → expose to GN as //sephr/cal_bridge etc.
+# tree as a symlink at //chrome/sephr → exposed to GN as
+# //chrome/sephr/cal_bridge, which is the label patch 002 wires into
+# chrome_dll deps and the path every `#include "chrome/sephr/..."` in the
+# bridge assumes. (Historical note: this used to land at //sephr, which
+# meant a clean bootstrap laid the bridge at a different GN path than the
+# one the working tree built — reconciled 2026-06-12.)
 # Symlink keeps edits live during dev; `git status` in src/ stays clean
-# because the overlay path is gitignored on the baseline init.
-if [ ! -e "$SRC/sephr" ]; then
-    log "Linking sephr_overlay/ → src/sephr"
-    ln -s "$ROOT/sephr_overlay" "$SRC/sephr"
-elif [ -L "$SRC/sephr" ]; then
+# because the overlay path is excluded on the baseline init.
+if [ -L "$SRC/sephr" ]; then
+    # Pre-reconciliation location — remove so a stale //sephr label can't
+    # mask broken //chrome/sephr wiring.
+    log "Removing stale src/sephr symlink (overlay now at src/chrome/sephr)"
+    rm "$SRC/sephr"
+fi
+if [ ! -e "$SRC/chrome/sephr" ]; then
+    log "Linking sephr_overlay/ → src/chrome/sephr"
+    ln -s "$ROOT/sephr_overlay" "$SRC/chrome/sephr"
+elif [ -L "$SRC/chrome/sephr" ]; then
     # Re-point in case ROOT moved (the rebrand from Agena/Sephrium did this).
-    ln -snf "$ROOT/sephr_overlay" "$SRC/sephr"
+    ln -snf "$ROOT/sephr_overlay" "$SRC/chrome/sephr"
 fi
 
 # ── 5 — ungoogled-chromium patches ─────────────────────────────────────────
@@ -207,6 +224,7 @@ log "Applying Sephr patches..."
 python3 sephrium/apply_patches.py \
     --patch-dir sephrium/patches/sephr \
     --chromium-dir "$SRC" \
+    --continue-on-error \
     >"$LOG_DIR/patch_sephr.log" 2>&1
 tail -1 "$LOG_DIR/patch_sephr.log"
 

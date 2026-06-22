@@ -1,0 +1,49 @@
+# Sephr — 017-builtin-ublock-origin
+#
+# Ships uBlock Origin as a built-in component extension. The unpacked
+# extension is fetched at bootstrap (scripts/fetch_ublock_origin.sh) and
+# copied into the framework Resources/ by package_framework.py.
+#
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1970,6 +1972,7 @@ static_library("browser") {
+     "//chrome/common:channel_info",
+     "//chrome/common:supervised_user_commands_mojom",
+     "//chrome/common:version_header",
++    "//chrome/sephr/builtin_extensions",
+     "//chrome/common/net",
+     "//chrome/common/notifications",
+     "//chrome/installer/util:with_no_strings",
+--- a/chrome/browser/extensions/component_extensions_allowlist/allowlist.cc
++++ b/chrome/browser/extensions/component_extensions_allowlist/allowlist.cc
+@@ -33,6 +33,7 @@ namespace extensions {
+ 
+ bool IsComponentExtensionAllowlisted(const std::string& extension_id) {
+   constexpr auto kAllowed = base::MakeFixedFlatSet<std::string_view>({
++      "cjpalhdlnbpafiamejdnhcphjbkeiagm",  // uBlock Origin (Sephr built-in)
+       extension_misc::kInAppPaymentsSupportAppId,
+       extension_misc::kPdfExtensionId,
+ #if BUILDFLAG(IS_CHROMEOS)
+--- a/chrome/browser/sephr_browser_main_extra_parts.cc
++++ b/chrome/browser/sephr_browser_main_extra_parts.cc
+@@ -6,6 +6,9 @@
+ 
+ #include "chrome/browser/sephr_browser_main_extra_parts.h"
+ 
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/profiles/profile_manager.h"
++#include "chrome/sephr/builtin_extensions/ublock_installer.h"
+ #include "base/logging.h"
+ 
+ namespace sephr {
+@@ -33,6 +36,10 @@ SephrBrowserMainExtraParts::SephrBrowserMainExtraParts() {
+ SephrBrowserMainExtraParts::~SephrBrowserMainExtraParts() = default;
+ 
+ void SephrBrowserMainExtraParts::PostBrowserStart() {
++  if (Profile* profile = ProfileManager::GetLastUsedProfile()) {
++    sephr::InstallBuiltinUBlockOrigin(profile);
++  }
++
+   if (!sephr::g_ui_boot_callback) {
+     LOG(WARNING) << "[sephr/extraparts] PostBrowserStart — no UI-boot "
+                     "callback registered; running headless.";

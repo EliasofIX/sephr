@@ -1,5 +1,57 @@
 import SwiftUI
 
+/// One row showing the on-device model's current state. Shares the
+/// monochrome ink ramp with the rest of the Form so it doesn't shout.
+struct IntelligencePaneRow: View {
+    let model: ModelManager
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("LFM2-VL-450M · BF16")
+                    .font(DC.TypeScale.callout)
+                Text(detail)
+                    .font(DC.TypeScale.caption)
+                    .foregroundStyle(DC.Ink.ink3)
+            }
+            Spacer()
+            statusBadge
+        }
+        .task { model.prepare() }
+    }
+
+    private var detail: String {
+        switch model.state {
+        case .missing:
+            return "Not downloaded · ~711 MB"
+        case let .downloading(progress):
+            let percent = Int((progress * 100).rounded())
+            return "Downloading · \(percent)%"
+        case .warming:
+            return "Warming on-device runtime…"
+        case .ready:
+            return "Ready · running on this device"
+        case let .error(message):
+            return message
+        }
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch model.state {
+        case .missing:
+            Text("Download").dcLabel()
+        case .downloading, .warming:
+            ProgressView()
+                .controlSize(.small)
+        case .ready:
+            Text("Ready").dcLabel()
+        case .error:
+            Text("Error").dcLabel()
+        }
+    }
+}
+
 /// Settings sheet — a standard Form (the system pattern), monochrome by
 /// inheritance of the DC ramp.
 struct SettingsView: View {
@@ -14,6 +66,11 @@ struct SettingsView: View {
         Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "—"
+    }
+
+    private var isModelDownloading: Bool {
+        if case .downloading = engine.model.state { return true }
+        return false
     }
 
     var body: some View {
@@ -46,15 +103,15 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle("Block Ads & Trackers", isOn: $contentBlocking)
+                    Toggle("uBlock Origin", isOn: $contentBlocking)
                         .onChange(of: contentBlocking) { _, enabled in
                             engine.pool.setContentBlocking(enabled)
                         }
                 } header: {
                     Text("Privacy")
                 } footer: {
-                    Text("Blocks common ad networks, trackers, and cookie "
-                         + "banners. Pages load faster and cleaner.")
+                    Text("Network lists from uBlock Origin, EasyList, and "
+                         + "EasyPrivacy. Cookie banners are hidden with CSS.")
                 }
 
                 Section {
@@ -70,6 +127,24 @@ struct SettingsView: View {
                             UIApplication.shared.open(url)
                         }
                     }
+                }
+
+                Section {
+                    IntelligencePaneRow(model: engine.model)
+                    Button("Reload Model") {
+                        engine.model.resetAndRedownload()
+                    }
+                    .disabled(isModelDownloading)
+                } header: {
+                    Text("Intelligence")
+                } footer: {
+                    Text("SuperBrowse and Summarize run the full-"
+                         + "precision (~711 MB) LFM2-VL-450M model on "
+                         + "this device. Prompts and page text never "
+                         + "leave your phone.\n\n"
+                         + "Model © Liquid AI, licensed under the "
+                         + "LFM Open License v1.0.")
+                        .font(DC.TypeScale.caption)
                 }
 
                 Section("About") {

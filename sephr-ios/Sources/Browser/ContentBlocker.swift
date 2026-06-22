@@ -1,23 +1,12 @@
 import WebKit
 
-/// Always-on (toggleable) blocking of common ad/tracker hosts and cookie
-/// banners, compiled once into a WKContentRuleList and attached to every
-/// page's user content controller. Blocking is a speed feature as much as
-/// a privacy one — fewer requests, cleaner first paint.
+/// uBlock Origin filter lists compiled into a WKContentRuleList. iOS can't
+/// run the full uBlock extension, so we ship the same default network lists
+/// (uBlock filters + EasyList + EasyPrivacy + Peter Lowe) as a compiled
+/// content rule set. Regenerate with `scripts/generate_ios_ublock_rules.py`.
 enum ContentBlocker {
 
-    static let identifier = "com.sephr.ios.blocklist"
-
-    private static let trackerHosts = [
-        "doubleclick.net", "googlesyndication.com", "googleadservices.com",
-        "google-analytics.com", "googletagmanager.com", "adservice.google.com",
-        "scorecardresearch.com", "quantserve.com", "outbrain.com",
-        "taboola.com", "criteo.com", "criteo.net", "adnxs.com",
-        "rubiconproject.com", "pubmatic.com", "openx.net", "moatads.com",
-        "amazon-adsystem.com", "facebook.net", "hotjar.com",
-        "mouseflow.com", "fullstory.com", "chartbeat.com", "parsely.com",
-        "branch.io", "adjust.com", "appsflyer.com",
-    ]
+    static let identifier = "com.sephr.ios.ublock"
 
     private static let bannerSelectors = [
         "#onetrust-banner-sdk", "#onetrust-consent-sdk",
@@ -29,7 +18,33 @@ enum ContentBlocker {
     ]
 
     private static var json: String {
-        var rules: [[String: Any]] = trackerHosts.map { host in
+        if let url = Bundle.main.url(
+            forResource: "ublock-content-rules", withExtension: "json"),
+           let data = try? Data(contentsOf: url),
+           var rules = try? JSONSerialization.jsonObject(with: data)
+            as? [[String: Any]] {
+            rules.append([
+                "trigger": ["url-filter": ".*"],
+                "action": [
+                    "type": "css-display-none",
+                    "selector": bannerSelectors.joined(separator: ", "),
+                ],
+            ])
+            let out = try! JSONSerialization.data(withJSONObject: rules)
+            return String(data: out, encoding: .utf8)!
+        }
+        return fallbackJSON
+    }
+
+    /// Minimal fallback when the generated bundle isn't present (dev builds
+    /// that skipped `scripts/generate_ios_ublock_rules.py`).
+    private static var fallbackJSON: String {
+        let hosts = [
+            "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+            "google-analytics.com", "googletagmanager.com", "adnxs.com",
+            "taboola.com", "outbrain.com", "scorecardresearch.com",
+        ]
+        var rules: [[String: Any]] = hosts.map { host in
             [
                 "trigger": [
                     "url-filter": "^https?://([^/]*\\.)?"
@@ -42,8 +57,10 @@ enum ContentBlocker {
         }
         rules.append([
             "trigger": ["url-filter": ".*"],
-            "action": ["type": "css-display-none",
-                       "selector": bannerSelectors.joined(separator: ", ")],
+            "action": [
+                "type": "css-display-none",
+                "selector": bannerSelectors.joined(separator: ", "),
+            ],
         ])
         let data = try! JSONSerialization.data(withJSONObject: rules)
         return String(data: data, encoding: .utf8)!

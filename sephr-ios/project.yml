@@ -5,15 +5,30 @@ options:
     iOS: "26.0"
   createIntermediateGroups: true
 
+# Liquid AI's LEAP iOS SDK — drives the on-device LFM2-VL-450M runtime
+# behind SuperBrowse + Summarize. ModelManager.swift conditionally compiles
+# against it (#if canImport(LeapSDK)) so the build still produces a usable
+# mock backend if the dependency fails to resolve.
+packages:
+  LeapSDK:
+    url: https://github.com/Liquid4All/leap-ios.git
+    from: "0.7.7"
+
 settings:
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    CURRENT_PROJECT_VERSION: "2"
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGNING_REQUIRED: "NO"
-    CODE_SIGNING_ALLOWED: "NO"
+    # Signing must be ALLOWED so entitlements embed when present; the simulator
+    # ad-hoc signs with "-", device builds override identity/team on the
+    # xcodebuild command line. ENABLE_DEBUG_DYLIB=NO keeps a single executable
+    # so entitlements embed conventionally (the Xcode 16 debug-dylib split
+    # scatters them into __preview.dylib and codesign reads empty).
+    CODE_SIGNING_ALLOWED: "YES"
+    ENABLE_DEBUG_DYLIB: "NO"
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
     GENERATE_INFOPLIST_FILE: "NO"
 
@@ -24,8 +39,16 @@ targets:
     supportedDestinations: [iOS]
     sources:
       - path: Sources
-    resources:
+      # xcodegen has no `resources:` key — resources live under `sources:` and
+      # it auto-assigns the build phase by file type (.xcassets → Resources,
+      # so actool compiles the app icon). Listing the catalog explicitly (not
+      # the whole Resources/ dir) keeps Info.plist + *.entitlements out of the
+      # bundle's resources.
       - path: Resources/Assets.xcassets
+      - path: Resources/ublock-content-rules.json
+        optional: true
+    dependencies:
+      - package: LeapSDK
     info:
       path: Resources/Info.plist
       properties:
@@ -61,3 +84,4 @@ targets:
         INFOPLIST_KEY_UIUserInterfaceStyle: Automatic
         SUPPORTS_MACCATALYST: "NO"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: Resources/Sephr.entitlements

@@ -33,6 +33,19 @@ treat_warnings_as_errors = false
 use_official_google_api_keys = false
 use_unofficial_version_number = false
 
+# ── Proprietary media codecs (H.264/AVC, AAC, MP3) + HLS ───────────────────
+# ungoogled defaults to the royalty-free codec set (VP8/9, AV1, Opus, etc.),
+# which is why sites that serve H.264/AAC over HLS — X.com/Twitter video,
+# many embeds — won't play. ffmpeg_branding="Chrome" selects the FFmpeg
+# config that ships the H.264/AAC/MP3 decoders (config headers already
+# vendored under third_party/ffmpeg/chromium/config/Chrome/), and
+# proprietary_codecs=true enables the HLS demuxer + platform decode paths
+# (media/media_options.gni). Both must be set together. NOTE: H.264/AAC are
+# patent-licensed (Via LA) — fine for personal/dev use; revisit before
+# distributing a signed build.
+ffmpeg_branding = "Chrome"
+proprietary_codecs = true
+
 # ── macOS target ──────────────────────────────────────────────────────────
 target_os = "mac"
 target_cpu = "arm64"

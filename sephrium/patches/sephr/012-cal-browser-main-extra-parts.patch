@@ -123,3 +123,41 @@
 +  sephr::g_ui_boot_callback();
 +  VLOG(1) << "[sephr/extraparts] UI callback returned.";
 +}
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -193,6 +193,10 @@ static_library("browser") {
+   sources = [
+     "about_flags.cc",
+     "accessibility/accessibility_labels_service.cc",
++    # Sephr — registered as ChromeBrowserMainExtraParts to bridge into Swift UI.
++    # Listed at the top of the sources block for visibility; chrome/browser
++    # otherwise sorts alphabetically.
++    "sephr_browser_main_extra_parts.cc",
++    "sephr_browser_main_extra_parts.h",
+     "accessibility/accessibility_labels_service.h",
+     "accessibility/accessibility_labels_service_factory.cc",
+     "accessibility/accessibility_labels_service_factory.h",
+--- a/chrome/browser/chrome_browser_main.cc
++++ b/chrome/browser/chrome_browser_main.cc
+@@ -313,6 +313,7 @@
+ #if defined(USE_AURA)
+ #include "ui/aura/env.h"
+ #endif
++
++#include "chrome/browser/sephr_browser_main_extra_parts.h"
+ 
+ // Separate per-platform blocks specifically for chrome_browser_main code. Put
+ // other per-platform includes in the appropriate section above.
+@@ -765,6 +766,12 @@ std::unique_ptr<ChromeBrowserMainParts> CreateBrowserProcessMainParts(
+   main_parts->AddParts(std::make_unique<ChromeBrowserMainExtraPartsMac>());
+ #endif
+ 
++  // Sephr: PostBrowserStart fires our UI-boot callback (registered via
++  // cal_bridge SephriumSetUiBootCallback). Must run AFTER ExtraPartsMac so
++  // NSApplication is wired up, but BEFORE Gpu so the first paint has the
++  // GPU context ready.
++  main_parts->AddParts(std::make_unique<SephrBrowserMainExtraParts>());
++
+ #if BUILDFLAG(IS_CHROMEOS)
+   // TODO(jamescook): Combine with `ChromeBrowserMainPartsAsh`.
+   main_parts->AddParts(std::make_unique<ChromeBrowserMainExtraPartsAsh>());

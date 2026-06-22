@@ -1,13 +1,17 @@
 import AppKit
-import Combine
 import CAL
 
+// No SwiftUI / Combine consumers — every observer reacts to
+// `.sephrSpaceChanged` / `.sephrSpaceListChanged` notifications. The
+// previous `@Published`s on `spaces` / `currentSpace` fired
+// `objectWillChange` on every mutation with nobody subscribed, paying
+// the publisher cost on the cold-launch path for nothing.
 @MainActor
-final class SephrSpaceManager: ObservableObject {
+final class SephrSpaceManager {
     static let shared = SephrSpaceManager()
 
-    @Published private(set) var spaces: [SephrSpace] = []
-    @Published private(set) var currentSpace: SephrSpace
+    private(set) var spaces: [SephrSpace] = []
+    private(set) var currentSpace: SephrSpace
 
     private init() {
         let saved = SephrSessionStore.shared.loadSpaces()
@@ -25,7 +29,63 @@ final class SephrSpaceManager: ObservableObject {
         // sidebar — silently breaking tab persistence.
         if saved.isEmpty {
             persist()
+        } else {
+            bootstrapSidebarFavoritesIfNeeded()
         }
+    }
+
+    static let maxSidebarFavorites = 4
+
+    /// Spaces pinned to the footer switcher — favorited ones, capped at
+    /// four, with the active space always included.
+    func footerSpaces() -> [SephrSpace] {
+        var favs = spaces.filter(\.isFavorited)
+        if favs.count > Self.maxSidebarFavorites {
+            favs = Array(favs.prefix(Self.maxSidebarFavorites))
+        }
+        if !favs.contains(where: { $0.id == currentSpace.id }) {
+            if favs.count >= Self.maxSidebarFavorites {
+                favs.removeLast()
+            }
+            favs.insert(currentSpace, at: 0)
+        }
+        return favs
+    }
+
+    /// Toggle whether a space appears in the sidebar footer (max four).
+    func setFavorite(_ space: SephrSpace, favorite: Bool) {
+        guard let idx = spaces.firstIndex(where: { $0.id == space.id }) else { return }
+        if favorite {
+            let count = spaces.filter(\.isFavorited).count
+            if count >= Self.maxSidebarFavorites, !spaces[idx].isFavorited {
+                if let drop = spaces.firstIndex(where: {
+                    $0.isFavorited && $0.id != currentSpace.id
+                }) ?? spaces.firstIndex(where: \.isFavorited) {
+                    spaces[drop].isFavorited = false
+                }
+            }
+            spaces[idx].isFavorited = true
+        } else {
+            spaces[idx].isFavorited = false
+        }
+        if currentSpace.id == space.id { currentSpace = spaces[idx] }
+        persist()
+        NotificationCenter.default.post(name: .sephrSpaceListChanged, object: nil)
+    }
+
+    func toggleFavorite(_ space: SephrSpace) {
+        guard let idx = spaces.firstIndex(where: { $0.id == space.id }) else { return }
+        setFavorite(space, favorite: !spaces[idx].isFavorited)
+    }
+
+    /// First launch after the favorite field ships: pin the first four
+    /// spaces so existing users don't get an empty footer.
+    private func bootstrapSidebarFavoritesIfNeeded() {
+        guard !spaces.contains(where: \.isFavorited) else { return }
+        for i in spaces.indices where i < Self.maxSidebarFavorites {
+            spaces[i].isFavorited = true
+        }
+        persist()
     }
 
     @discardableResult
@@ -41,7 +101,8 @@ final class SephrSpaceManager: ObservableObject {
             colorHex: color,
             useIsolatedProfile: isolated,
             backgroundImagePath: nil,
-            createdAt: Date()
+            createdAt: Date(),
+            isFavorited: spaces.filter(\.isFavorited).count < Self.maxSidebarFavorites
         )
         spaces.append(s)
         persist()

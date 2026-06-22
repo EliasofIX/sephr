@@ -17,4 +17,20 @@ extension Notification.Name {
     /// in a peek overlay.
     static let sephrPresentPopupPeek =
         Notification.Name("sephr.popup.present")
+
+    /// Posted whenever a tab's media session changes (play/pause flips,
+    /// Media Session API metadata updates, the session appears/disappears).
+    /// `object` is the `SephrTab`. The sidebar's Now Playing pill listens
+    /// app-wide — per-tab bus subscriptions can't see a session START on a
+    /// tab nobody subscribed to yet.
+    static let sephrTabMediaChanged =
+        Notification.Name("sephr.tab.mediaChanged")
+
+    /// Note-canvas commands rerouted from the app-wide keyboard shortcut
+    /// monitor (which must swallow Cmd+Z/Cmd+Shift+Z/Cmd+V before
+    /// Chromium sees them). `object` is the note tab's UUID; the note's
+    /// SephrNoteStore/canvas acts only when the ID matches its own.
+    static let sephrNoteUndo  = Notification.Name("sephr.note.undo")
+    static let sephrNoteRedo  = Notification.Name("sephr.note.redo")
+    static let sephrNotePaste = Notification.Name("sephr.note.paste")
 }

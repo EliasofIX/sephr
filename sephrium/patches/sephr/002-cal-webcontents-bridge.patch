@@ -2,29 +2,38 @@
 #
 # Wires Sephr's CAL bridge into the chrome_dll link. The bridge sources
 # THEMSELVES live in this repo under sephr_overlay/cal_bridge/ and are
-# symlinked into the Chromium tree at //sephr/cal_bridge by bootstrap.sh —
-# they do NOT live in this patch.
+# symlinked into the Chromium tree at //chrome/sephr by bootstrap.sh
+# (section 4b) — they do NOT live in this patch. //chrome/sephr matches
+# the `#include "chrome/sephr/cal_bridge/..."` paths inside the bridge
+# and the GN label below.
 #
 # Real upstream touchpoints (the ONLY thing 3-way merge has to rebase on
 # every Chromium bump):
-#   * chrome/BUILD.gn  — one line, add //sephr/cal_bridge to chrome_dll deps.
-#   * chrome/app/framework.exports — the _Sephrium* exports list.
+#   * chrome/app/framework.exports — the _Sephrium* exports list (51
+#     symbols). Exported symbols are link roots; any extern "C" entry point
+#     missing here is silently dead-stripped (the build_sephrium.sh gate
+#     checks every name).
+#   * chrome/BUILD.gn — one line, add //chrome/sephr/cal_bridge to
+#     chrome_dll deps.
 #
-# Both anchor on stable structural landmarks (the deps = [ block of
-# chrome_dll, and the end of the chrome-framework export list) so they
-# survive Chromium reshuffles via git's 3-way merge engine.
-
+# GENERATED FILE — do not hand-edit the hunks. Regenerate from the live
+# tree with scripts/regen_bridge_patch.sh (the build gate fails when this
+# patch drifts from the live framework.exports).
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
-@@ -44,4 +47,30 @@
- _SephriumWebContentsCopyTitle
-+_SephriumWebContentsIsAudible
- _SephriumWebContentsSetNavCallback
- _SephriumWebContentsCaptureSnapshot
-+# ---- Sephr CAL bridge -----------------------------------------------------
+@@ -22,3 +22,60 @@
+ _ChromeAppModeStart_v8
+ _ChromeMain
+ _ChromeWebAppShortcutCopierMain
++
++# ---- Sephr CAL bridge (chrome/sephr/cal_bridge) — Phase 1 C ABI ----
++# Listed here so the extern "C" entry points stay globally visible AND are
++# retained: exported symbols are link roots, so these otherwise-unreferenced
++# functions are not dead-stripped out of the framework dylib.
 +_SephriumInitialize
 +_SephriumPumpOnce
 +_SephriumSetUiBootCallback
++_SephriumSetOpenExternalURLCallback
 +_SephriumProfileGet
 +_SephriumProfileRelease
 +_SephriumWebContentsCreate
@@ -34,10 +43,32 @@
 +_SephriumWebContentsGoBack
 +_SephriumWebContentsGoForward
 +_SephriumWebContentsReload
++_SephriumWebContentsReloadBypassingCache
 +_SephriumWebContentsStop
 +_SephriumWebContentsSetSize
 +_SephriumWebContentsFocus
 +_SephriumWebContentsSetFrozen
++_SephriumWebContentsSetVisible
++_SephriumWebContentsCopyURL
++_SephriumWebContentsCopyTitle
++_SephriumWebContentsIsAudible
++_SephriumWebContentsIsAudioMuted
++_SephriumWebContentsSetAudioMuted
++_SephriumWebContentsSetNavCallback
++_SephriumWebContentsSetFaviconCallback
++_SephriumWebContentsSetLoadingCallback
++_SephriumWebContentsSetAudioStateCallback
++_SephriumWebContentsSetMediaSessionCallback
++_SephriumWebContentsMediaResume
++_SephriumWebContentsMediaSuspend
++_SephriumWebContentsMediaNextTrack
++_SephriumWebContentsMediaPreviousTrack
++_SephriumWebContentsSetNewTabRequestCallback
++_SephriumWebContentsSetTargetURLCallback
++_SephriumWebContentsSetPopupRequestCallback
++_SephriumWebContentsSetCloseRequestCallback
++_SephriumWebContentsCaptureSnapshot
++# ---- Phase 4: History / Downloads / Omnibox -----------------------------
 +_SephriumHistoryQuery
 +_SephriumHistoryDeleteURL
 +_SephriumHistoryClearAll
@@ -45,15 +76,19 @@
 +_SephriumDownloadPause
 +_SephriumDownloadResume
 +_SephriumDownloadCancel
++_SephriumExtensionsSubscribe
++_SephriumExtensionsSetEnabled
++_SephriumExtensionsUninstall
++_SephriumExtensionsInstallCRX
 +_SephriumOmniboxQuery
- _SephriumStringFree
++_SephriumStringFree
 --- a/chrome/BUILD.gn
 +++ b/chrome/BUILD.gn
 @@ -1120,6 +1120,7 @@
-
+ 
      deps = [
        ":dependencies",
-+      "//sephr/cal_bridge",
++      "//chrome/sephr/cal_bridge",
        "//build:chromeos_buildflags",
        "//chrome/app:command_ids",
        "//chrome/common:buildflags",

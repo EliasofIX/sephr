@@ -42,14 +42,14 @@ final class SephrSidebarURLField: NSView, NSTextFieldDelegate, NSPopoverDelegate
         super.init(frame: frame)
         wantsLayer = true
 
-        // macOS 26 Liquid Glass pill behind the text field. The pill is
-        // sized to the URL field's bounds and uses a half-height corner
-        // radius so it reads as a capsule. Falls back to a tinted vibrancy
-        // view on older systems so the field still has visible chrome.
+        // macOS 26 Liquid Glass bar behind the text field. Sized to the
+        // URL field's bounds with a modest corner radius so it reads as
+        // a rounded rectangle (matching tab rows), not a capsule. Falls
+        // back to a tinted vibrancy view on older systems.
         let pill: NSView
         if #available(macOS 26, *) {
             let g = NSGlassEffectView(frame: .zero)
-            g.cornerRadius = 15  // half of the field's 30pt height
+            g.cornerRadius = DC.Radius.standard
             g.tintColor = nil
             pill = g
         } else {
@@ -58,7 +58,7 @@ final class SephrSidebarURLField: NSView, NSTextFieldDelegate, NSPopoverDelegate
             v.blendingMode = .withinWindow
             v.state = .active
             v.wantsLayer = true
-            v.layer?.cornerRadius = 15
+            v.layer?.cornerRadius = DC.Radius.standard
             v.layer?.masksToBounds = true
             pill = v
         }
@@ -119,33 +119,29 @@ final class SephrSidebarURLField: NSView, NSTextFieldDelegate, NSPopoverDelegate
             actionCluster.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
 
-        // Sync the field text to the active tab's URL whenever the
-        // model changes (but don't stomp text mid-edit). Structure
-        // events (tab created / closed / moved) can change which tab
-        // is active, so re-anchor the per-tab subscription too.
+        // Re-anchor on tab created / closed / moved — those can swap
+        // which tab is active (close-promotes another, new tab becomes
+        // active). resubscribeToActiveTab is the only thing we need:
+        // when the active tab actually changed it syncs; when it didn't,
+        // a structure event doesn't change the URL either, so there's
+        // nothing to sync. The earlier belt-and-suspenders syncURL()
+        // call was a leftover from when activateTab emitted structure.
         structureToken = TabEventBus.shared.subscribeStructure { [weak self] in
             self?.resubscribeToActiveTab()
-            // resubscribeToActiveTab() already synced when it re-anchored;
-            // this trailing call covers its guard-short-circuit (same tab).
-            self?.syncURL()
         }
         resubscribeToActiveTab()
     }
     required init?(coder: NSCoder) { fatalError() }
 
     /// (Re-)subscribe to the CURRENT active tab so its `.url` updates
-    /// reach the field. A plain tab switch posts per-tab `.active` to
-    /// both sides — the OLD tab's `.active` arrives on our current
-    /// subscription, and the handler re-anchors to the new active tab
-    /// from there (activateTab flips the new tab on before posting the
-    /// old tab's deactivation, so `activeTab()` already resolves to the
-    /// new one when we land here).
-    ///
-    /// Transition note: activateTab currently ALSO emits a structure
-    /// event for unmigrated legacy observers, which makes this `.active`
-    /// re-anchor look redundant. Once the cleanup task removes
-    /// activation's structure emit, this `.active` path is the ONLY way
-    /// the field follows a plain tab switch — do not remove.
+    /// reach the field. A plain tab switch posts per-tab `.active` —
+    /// the OLD tab's `.active` arrives on our current subscription, and
+    /// the handler re-anchors to the new active tab from there
+    /// (activateTab flips the new tab on before posting the old tab's
+    /// deactivation, so `activeTab()` already resolves to the new one
+    /// when we land here). This `.active` path is the ONLY way the
+    /// field follows a plain tab switch — activateTab no longer fires
+    /// the structure channel, only the lighter active-change channel.
     private func resubscribeToActiveTab() {
         let active = SephrTabModel.shared.activeTab()
         guard active?.id != lastSubscribedTabID else { return }
@@ -204,7 +200,10 @@ final class SephrSidebarURLField: NSView, NSTextFieldDelegate, NSPopoverDelegate
             ?? SephrSearchEngines.queryURL(for: s)
             ?? s
         let space = SephrSpaceManager.shared.currentSpace
+        // A note tab can't navigate — typing a URL while one is active
+        // opens a fresh web tab instead of stomping the note's state.
         if let active = SephrTabModel.shared.activeTab(),
+           active.kind == .web,
            active.spaceID == space.id {
             active.webView?.loadURL(resolved)
             active.url = resolved
@@ -357,7 +356,7 @@ final class SephrSidebarActionButton: SephrHoverButton {
             }
         }
         symbolConfiguration = .init(pointSize: 12, weight: .medium)
-        contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
+        contentTintColor = NSColor.secondaryLabelColor
         widthAnchor.constraint(equalToConstant: 24).isActive = true
         heightAnchor.constraint(equalToConstant: 24).isActive = true
     }
@@ -404,7 +403,7 @@ final class SephrSidebarNavButton: SephrHoverButton {
         super.init(frame: .zero)
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         symbolConfiguration = .init(pointSize: 12, weight: .medium)
-        contentTintColor = NSColor.labelColor.withAlphaComponent(0.7)
+        contentTintColor = NSColor.secondaryLabelColor
         widthAnchor.constraint(equalToConstant: 26).isActive = true
         heightAnchor.constraint(equalToConstant: 24).isActive = true
     }

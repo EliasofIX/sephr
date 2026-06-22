@@ -3,7 +3,12 @@ import AppKit
 struct SephrSearchResult: Identifiable, Hashable {
     enum Kind: String { case url, search, history, bookmark, tab, space, action }
 
-    let id = UUID()
+    /// Stable identity from kind + url + title — `let id = UUID()` would
+    /// re-identify every row on every keystroke, forcing SwiftUI's
+    /// ForEach to rebuild the whole results list instead of diffing it
+    /// in place. With a stable id, rows that survive a query refinement
+    /// stay mounted and their state (hover, fade, height) doesn't blink.
+    var id: String { "\(kind.rawValue)|\(url ?? "")|\(title)" }
     let kind: Kind
     let title: String
     let subtitle: String
@@ -34,8 +39,12 @@ struct SephrSearchResult: Identifiable, Hashable {
         }
     }
 
-    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(kind)
+        hasher.combine(url)
+        hasher.combine(title)
+    }
     static func == (lhs: SephrSearchResult, rhs: SephrSearchResult) -> Bool {
-        lhs.id == rhs.id
+        lhs.kind == rhs.kind && lhs.url == rhs.url && lhs.title == rhs.title
     }
 }

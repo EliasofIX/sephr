@@ -37,10 +37,15 @@ enum SephrApp {
             // during a cold launch (which the CAL bridge buffered until now).
             SephrDefaultBrowser.shared.installURLHandler()
 
+            SephrContentBlocking.applyPreference()
+
             // Auto-focus the URL field in the sidebar so the user can
             // type immediately on launch. Cmd-T still opens the floating
             // palette as a richer search interface.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            // One runloop hop after makeKeyAndOrderFront is enough — the
+            // field is fully constructed by setupViews(). The previous
+            // 0.8s delay was dead time the user felt as boot lag.
+            DispatchQueue.main.async {
                 wc.sidebarView?.urlField.makeFirstResponder()
             }
             updater = SephrUpdater()
@@ -48,19 +53,18 @@ enum SephrApp {
 
             // Hijack Chromium's "Settings…" menu item so it opens our
             // native preferences window instead of chrome://settings.
-            // Install once, then re-assert after a beat and on every
-            // activation — Chromium re-templates its menu in a few edge
-            // cases (profile load, full-screen entry).
+            // Install once at boot, then re-assert on every activation —
+            // Chromium re-templates its menu in a few edge cases (profile
+            // load, full-screen entry). The +1.0s asyncAfter belt-and-
+            // suspenders was redundant once didBecomeActive fires on the
+            // first activation (which is part of the cold-launch path).
             SephrSettingsController.shared.installMenuOverride()
             SephrQuitController.shared.installMenuOverride()
             SephrSpacesMenuController.shared.install()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                MainActor.assumeIsolated {
-                    SephrSettingsController.shared.installMenuOverride()
-                    SephrQuitController.shared.installMenuOverride()
-                    SephrSpacesMenuController.shared.install()
-                }
-            }
+            // Settings + Quit menu re-install on activation (Chromium
+            // re-templates its menu on profile load / full-screen entry).
+            // SephrSpacesMenuController self-heals on the same notification
+            // from its own init — no need to drive it from here too.
             NotificationCenter.default.addObserver(
                 forName: NSApplication.didBecomeActiveNotification,
                 object: nil, queue: .main
@@ -68,7 +72,6 @@ enum SephrApp {
                 MainActor.assumeIsolated {
                     SephrSettingsController.shared.installMenuOverride()
                     SephrQuitController.shared.installMenuOverride()
-                    SephrSpacesMenuController.shared.install()
                 }
             }
 
@@ -76,15 +79,21 @@ enum SephrApp {
             // NSApplicationWillTerminate notification through its own
             // hooks; we just observe it here. The tab model coalesces
             // writes on a debounce — `flushPersist()` forces any pending
-            // write to land before we tear the run loop down.
+            // write to land before we tear the run loop down. The
+            // `UserDefaults.synchronize()` here covers the window-frame
+            // autosave (and every other UserDefault key): we removed the
+            // per-resize sync (60 Hz of XPC + plist writes was the
+            // perf hotspot), so this is the single flush point now.
             NotificationCenter.default.addObserver(
                 forName: NSApplication.willTerminateNotification,
                 object: nil, queue: .main
             ) { _ in
                 MainActor.assumeIsolated {
                     SephrTabModel.shared.flushPersist()
+                    SephrBoostManager.shared.flushPersist()
                 }
                 SephrSessionStore.shared.flush()
+                UserDefaults.standard.synchronize()
             }
 
             log("[sephr] window count after wc.showWindow: \(app.windows.count)")

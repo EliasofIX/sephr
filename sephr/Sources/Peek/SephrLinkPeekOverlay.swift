@@ -38,7 +38,7 @@ final class SephrLinkPeekOverlay: NSView {
     private static let cardInsetBottom: CGFloat = 40
     private static let cardInsetLeading: CGFloat = 56
     private static let cardInsetTrailing: CGFloat = 56
-    private static let cardCornerRadius: CGFloat = 13
+    private static let cardCornerRadius: CGFloat = DC.Radius.standard
 
     /// Link peek — builds a fresh live web view of `urlString`
     /// (Shift+hover gesture). Shows the full promote control column.
@@ -154,12 +154,21 @@ final class SephrLinkPeekOverlay: NSView {
         ])
     }
 
+    /// Last bounds we built the cached shadow path for. layout() fires
+    /// every time the host's frame is set — including the no-op assigns
+    /// AppKit makes during the present animation — so guarding on the
+    /// bounds skips the CGPath allocation when nothing actually moved.
+    private var lastShadowBounds: NSRect = .zero
+
     override func layout() {
         super.layout()
+        let b = shadowHost.bounds
+        guard b != lastShadowBounds else { return }
+        lastShadowBounds = b
         // Cache the shadow path so Core Animation doesn't rasterize a 34pt
         // blur every frame of the present/dismiss animation.
         shadowHost.layer?.shadowPath = CGPath(
-            roundedRect: shadowHost.bounds,
+            roundedRect: b,
             cornerWidth: Self.cardCornerRadius,
             cornerHeight: Self.cardCornerRadius,
             transform: nil)
@@ -173,6 +182,9 @@ final class SephrLinkPeekOverlay: NSView {
     /// sibling subviews get no z-order/effect guarantees), using the
     /// `.clear` style for maximum transparency. Older systems fall back to a
     /// frosted `NSVisualEffectView` behind the button.
+    ///
+    /// Each chip is wrapped in a `SephrPeekControlHost` that tracks mouse
+    /// hover and brightens the glass while the cursor is over it.
     private func makeControl(symbol: String,
                              label: String,
                              action: Selector) -> NSView {
@@ -190,46 +202,78 @@ final class SephrLinkPeekOverlay: NSView {
         b.target = self
         b.action = action
 
+        let host = SephrPeekControlHost()
+        host.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            host.widthAnchor.constraint(equalToConstant: 30),
+            host.heightAnchor.constraint(equalToConstant: 30),
+        ])
+
         if #available(macOS 26, *) {
             let glass = NSGlassEffectView()
             glass.translatesAutoresizingMaskIntoConstraints = false
-            glass.cornerRadius = 15
+            glass.cornerRadius = DC.Radius.standard
             glass.tintColor = nil
             glass.style = .clear           // most transparent glass variant
             glass.contentView = b          // canonical: embed in the glass
+            host.addSubview(glass)
             NSLayoutConstraint.activate([
-                glass.widthAnchor.constraint(equalToConstant: 30),
-                glass.heightAnchor.constraint(equalToConstant: 30),
+                glass.topAnchor.constraint(equalTo: host.topAnchor),
+                glass.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+                glass.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                glass.trailingAnchor.constraint(equalTo: host.trailingAnchor),
             ])
-            return glass
+            // Hover: brighten the glass with a subtle white tint. `tintColor`
+            // is what NSGlassEffectView exposes for exactly this kind of
+            // modulation; nil at rest restores the un-tinted resting state.
+            host.onHoverChange = { [weak glass] on in
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.15
+                    ctx.timingFunction =
+                        CAMediaTimingFunction(name: .easeOut)
+                    ctx.allowsImplicitAnimation = true
+                    glass?.tintColor = on
+                        ? NSColor.white.withAlphaComponent(0.22)
+                        : nil
+                }
+            }
+            return host
         }
 
         // Pre-26 fallback: frosted material behind the button.
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
         let v = NSVisualEffectView()
         v.translatesAutoresizingMaskIntoConstraints = false
         v.material = .hudWindow
         v.blendingMode = .withinWindow
         v.state = .active
         v.wantsLayer = true
-        v.layer?.cornerRadius = 15
+        v.layer?.cornerRadius = DC.Radius.standard
         v.layer?.masksToBounds = true
-        container.addSubview(v)
-        container.addSubview(b)
+        host.addSubview(v)
+        host.addSubview(b)
         NSLayoutConstraint.activate([
-            container.widthAnchor.constraint(equalToConstant: 30),
-            container.heightAnchor.constraint(equalToConstant: 30),
-            v.topAnchor.constraint(equalTo: container.topAnchor),
-            v.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            v.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            v.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            b.topAnchor.constraint(equalTo: container.topAnchor),
-            b.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            b.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            b.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            v.topAnchor.constraint(equalTo: host.topAnchor),
+            v.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            v.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            v.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            b.topAnchor.constraint(equalTo: host.topAnchor),
+            b.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            b.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            b.trailingAnchor.constraint(equalTo: host.trailingAnchor),
         ])
-        return container
+        // Hover: swap to a brighter system material so the chip lifts off
+        // the dim backdrop. `.menu` reads as visibly lighter than `.hudWindow`
+        // in both Light and Dark appearances.
+        host.onHoverChange = { [weak v] on in
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                ctx.timingFunction =
+                    CAMediaTimingFunction(name: .easeOut)
+                ctx.allowsImplicitAnimation = true
+                v?.material = on ? .menu : .hudWindow
+            }
+        }
+        return host
     }
 
     @objc private func closeTapped()  { onClose?() }
@@ -303,4 +347,48 @@ private final class SephrPeekBackdrop: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func mouseDown(with event: NSEvent) { onClick?() }
+}
+
+/// Mouse-tracking wrapper for a peek control chip. Reports hover state
+/// transitions through `onHoverChange`; the makeControl call site uses that
+/// to brighten the Liquid Glass background while the cursor is over the
+/// chip. Kept generic (no reference to NSGlassEffectView) so the same host
+/// works for both the macOS 26 and pre-26 fallback paths.
+private final class SephrPeekControlHost: NSView {
+
+    var onHoverChange: ((Bool) -> Void)?
+
+    private var trackingArea: NSTrackingArea?
+    private var isHovering = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited,
+                      .activeInActiveApp,
+                      .inVisibleRect],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { setHovering(true) }
+    override func mouseExited(with event: NSEvent)  { setHovering(false) }
+
+    private func setHovering(_ on: Bool) {
+        guard on != isHovering else { return }
+        isHovering = on
+        onHoverChange?(on)
+    }
 }

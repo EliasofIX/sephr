@@ -152,6 +152,10 @@ private struct ExtensionRow: View {
         _enabled = State(initialValue: ext.isEnabled)
     }
 
+    private var isBuiltinUBlock: Bool {
+        ext.extensionID == SephrContentBlocking.uBlockOriginID
+    }
+
     var body: some View {
         HStack(spacing: DC.Space.l) {
             Group {
@@ -170,9 +174,20 @@ private struct ExtensionRow: View {
             .opacity(enabled ? 1 : 0.5)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(ext.name)
-                    .font(DC.TypeScale.body)
-                    .foregroundStyle(DC.Ink.ink)
+                HStack(spacing: DC.Space.s) {
+                    Text(ext.name)
+                        .font(DC.TypeScale.body)
+                        .foregroundStyle(DC.Ink.ink)
+                    if isBuiltinUBlock {
+                        Text("Built-in")
+                            .font(DC.TypeScale.caption)
+                            .foregroundStyle(DC.Ink.ink3)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule().fill(DC.Ink.hairline.opacity(0.6)))
+                    }
+                }
                 Text(ext.version)
                     .font(DC.TypeScale.caption)
                     .foregroundStyle(DC.Ink.ink3)
@@ -190,8 +205,10 @@ private struct ExtensionRow: View {
                 }
 
             Menu {
-                Button("Remove", role: .destructive) {
-                    observer.uninstall(ext.extensionID)
+                if !isBuiltinUBlock {
+                    Button("Remove", role: .destructive) {
+                        observer.uninstall(ext.extensionID)
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -218,7 +235,8 @@ private struct ExtensionRow: View {
         // separates from siblings. Stroke brightens on hover too,
         // riding on top of the dcGlass hairline.
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: DC.Radius.standard,
+                             style: .continuous)
                 .strokeBorder(DC.Ink.hairline,
                               lineWidth: rowHovering
                                 ? DC.hairlineWidth * 2

@@ -184,7 +184,12 @@ final class SephrSpaceEditorView: NSView, NSTextFieldDelegate {
 final class SephrColorSwatch: NSView {
     let hex: String
     var onPick: ((String) -> Void)?
-    var isSelected = false { didSet { needsDisplay = true } }
+    var isSelected = false {
+        didSet {
+            guard isSelected != oldValue else { return }
+            needsDisplay = true
+        }
+    }
 
     init(hex: String) {
         self.hex = hex

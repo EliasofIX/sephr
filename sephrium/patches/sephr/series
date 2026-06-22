@@ -15,3 +15,5 @@
 013-disable-keychain-prompt-mac.patch
 014-brand-mac-product-names.patch
 015-liquid-glass-history-overlay.patch
+016-ua-brand-google-chrome.patch
+017-builtin-ublock-origin.patch

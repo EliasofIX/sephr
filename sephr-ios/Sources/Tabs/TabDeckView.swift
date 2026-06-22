@@ -89,7 +89,10 @@ struct TabDeckView: View {
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(DC.Ink.field)
                     .frame(width: 64, height: 48)
-                    .background(Capsule(style: .continuous).fill(DC.Ink.ink))
+                    .background(
+                        RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                         style: .continuous)
+                            .fill(DC.Ink.ink))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("New Tab")
@@ -97,7 +100,7 @@ struct TabDeckView: View {
             deckButton("archivebox", label: "Archive", action: onArchive)
         }
         .padding(.vertical, 6)
-        .dcGlass(cornerRadius: 28)
+        .dcGlass()
         .frame(maxWidth: sizeClass == .regular ? 520 : .infinity)
         .padding(.horizontal, DC.Space.l)
         .padding(.bottom, DC.Space.s)
@@ -129,15 +132,20 @@ struct TabCard: View {
     let onPin: () -> Void
 
     @State private var dragY: CGFloat = 0
+    /// Per-drag direction lock. Decided on the first onChanged event and
+    /// held until the gesture ends. `.horizontal` means "this drag is the
+    /// carousel's, not ours" — we keep our hands off it.
+    @State private var dragAxis: Axis?
 
     var body: some View {
         VStack(spacing: DC.Space.s) {
             snapshot
                 .frame(width: width, height: max(120, height - 56))
-                .clipShape(RoundedRectangle(cornerRadius: 24,
+                .clipShape(RoundedRectangle(cornerRadius: DC.Radius.standard,
                                             style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                     style: .continuous)
                         .strokeBorder(isActive ? DC.Ink.ink2 : DC.Ink.hairline,
                                       lineWidth: isActive ? 1.5 : 1))
 
@@ -162,7 +170,7 @@ struct TabCard: View {
         .offset(y: dragY)
         .opacity(1 - min(0.7, abs(dragY) / 300))
         .onTapGesture(perform: onSelect)
-        .gesture(flickUp)
+        .simultaneousGesture(flickUp)
         .contextMenu {
             Button(action: onPin) {
                 Label(tab.isPinned ? "Unpin" : "Pin",
@@ -200,15 +208,24 @@ struct TabCard: View {
     }
 
     private var flickUp: some Gesture {
-        DragGesture(minimumDistance: 12)
+        // 28pt threshold + simultaneousGesture lets the parent ScrollView
+        // claim short horizontal drags without us racing for them. The
+        // axis lock on the first qualifying event makes the decision
+        // sticky for the rest of the drag, so a finger that starts
+        // horizontal never sneaks into archiving.
+        DragGesture(minimumDistance: 28)
             .onChanged { value in
-                if value.translation.height < 0
-                    || abs(value.translation.height)
-                        > abs(value.translation.width) {
-                    dragY = min(0, value.translation.height)
+                if dragAxis == nil {
+                    dragAxis = abs(value.translation.height)
+                        > abs(value.translation.width)
+                        ? .vertical : .horizontal
                 }
+                guard dragAxis == .vertical else { return }
+                dragY = min(0, value.translation.height)
             }
             .onEnded { value in
+                defer { dragAxis = nil }
+                guard dragAxis == .vertical else { return }
                 if value.translation.height < -90
                     || value.predictedEndTranslation.height < -250 {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()

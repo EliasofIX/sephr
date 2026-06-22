@@ -22,6 +22,14 @@ final class SephrSplitManager {
         id == primaryID || id == secondaryID
     }
 
+    /// Membership in the current split group. There is only ever one
+    /// group and it persists in the sidebar even while hidden, so its
+    /// members are treated as "active" — e.g. exempt from tab sleeping
+    /// (their renderers must be ready the moment the split is shown).
+    func isInActiveSplit(_ id: UUID) -> Bool {
+        hasGroup && contains(id)
+    }
+
     func setGroup(primary: UUID, secondary: UUID) {
         guard primaryID != primary || secondaryID != secondary else { return }
         primaryID = primary
@@ -49,10 +57,10 @@ final class SephrSplitManager {
     private func notify() {
         // Split membership is structure-shaped for the sidebar: forming or
         // breaking a group changes which cells exist (two pills vs one
-        // combined SephrSplitTabCell), so it must go out as a structure event.
+        // combined SephrSplitTabCell), so it goes out on the structure
+        // channel. (The legacy `.sephrTabModelChanged` broadcast was
+        // retired alongside the per-tab perf cleanup — every observer has
+        // migrated to subscribeStructure.)
         TabEventBus.shared.postStructure()
-        // Legacy notification — kept for unmigrated observers; dies in the
-        // cleanup task.
-        NotificationCenter.default.post(name: .sephrTabModelChanged, object: nil)
     }
 }

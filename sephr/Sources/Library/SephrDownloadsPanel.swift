@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import CAL
 
@@ -55,38 +56,75 @@ struct SephrDownloadsPanel: View {
 private struct DownloadRow: View {
     let d: CALDownload
 
+    private var obs: SephrDownloadsObserver { .shared }
+
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: iconName)
-                .font(.system(size: 16, weight: .regular))
-                .foregroundStyle(iconColor)
-                .frame(width: 22)
+            Button {
+                obs.open(d)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: iconName)
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(iconColor)
+                        .frame(width: 22)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(filename)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(secondaryLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if d.state == .inProgress, d.totalBytes > 0 {
-                    ProgressView(
-                        value: Double(d.receivedBytes),
-                        total: Double(d.totalBytes))
-                        .progressViewStyle(.linear)
-                        .frame(height: 4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(filename)
+                            .font(.system(size: 13, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(secondaryLine)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        if d.state == .inProgress, d.totalBytes > 0 {
+                            ProgressView(
+                                value: Double(d.receivedBytes),
+                                total: Double(d.totalBytes))
+                                .progressViewStyle(.linear)
+                                .frame(height: 4)
+                        }
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-
-            Spacer(minLength: 4)
+            .buttonStyle(.plain)
+            .disabled(d.state != .complete)
 
             actionButtons
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .contentShape(Rectangle())
+        .contextMenu { downloadContextMenu }
+    }
+
+    @ViewBuilder
+    private var downloadContextMenu: some View {
+        if d.state == .complete {
+            Button("Open") { obs.open(d) }
+            Button("Show in Finder") { obs.revealInFinder(d) }
+        } else if d.state == .inProgress {
+            Button("Pause") { downloadsService.pause(d.identifier) }
+            Button("Cancel", role: .destructive) { downloadsService.cancel(d.identifier) }
+        } else if d.state == .paused {
+            Button("Resume") { downloadsService.resume(d.identifier) }
+            Button("Cancel", role: .destructive) { downloadsService.cancel(d.identifier) }
+        }
+
+        if !d.sourceURL.isEmpty {
+            Button("Copy Link") { obs.copyLink(d) }
+        }
+
+        Divider()
+
+        Button("Remove from List") { obs.hide(d.identifier) }
+    }
+
+    private var downloadsService: CALDownloads {
+        let pid = SephrSpaceManager.shared.currentSpace.profileID
+        return CALDownloads.sharedInstance(forProfile: pid)
     }
 
     private var filename: String {
@@ -132,26 +170,24 @@ private struct DownloadRow: View {
 
     @ViewBuilder
     private var actionButtons: some View {
-        let pid = SephrSpaceManager.shared.currentSpace.profileID
-        let svc = CALDownloads.sharedInstance(forProfile: pid)
         HStack(spacing: 4) {
             if d.state == .inProgress {
                 Button {
-                    svc.pause(d.identifier)
+                    downloadsService.pause(d.identifier)
                 } label: { Image(systemName: "pause.fill") }
                 .buttonStyle(.borderless)
                 Button {
-                    svc.cancel(d.identifier)
+                    downloadsService.cancel(d.identifier)
                 } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless)
             } else if d.state == .paused {
                 Button {
-                    svc.resume(d.identifier)
+                    downloadsService.resume(d.identifier)
                 } label: { Image(systemName: "play.fill") }
                 .buttonStyle(.borderless)
             } else if d.state == .complete {
                 Button {
-                    svc.reveal(inFinder: d.identifier)
+                    obs.revealInFinder(d)
                 } label: { Image(systemName: "magnifyingglass") }
                 .buttonStyle(.borderless)
                 .help("Show in Finder")

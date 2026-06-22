@@ -7,18 +7,18 @@ import AppKit
 
 // MARK: — Profile
 
-/// Identity card, Arc-style: a generated gradient "portrait" (the one
-/// sanctioned splash of colour), the display name, and a swatch picker —
-/// the placeholder for Arc's little profile images. No account, email,
-/// sync, or gifts; Sephr has none of those.
+/// Identity card: a profile "character" (emoji, SF Symbol, or Unicode
+/// glyph picked from `SephrCharacterPicker`) and a display name. No
+/// account, email, sync, or gifts; Sephr has none of those.
 struct ProfilePane: View {
     @State private var name = SephrPreferences.profileDisplayName
-    @State private var avatar = SephrPreferences.profileAvatarSeed
+    @State private var glyph = SephrGlyph(
+        storage: SephrPreferences.profileCharacter)
+    @State private var pickerShown = false
+    @StateObject private var nameDebouncer = TextDebouncer()
 
     private var resolvedName: String {
-        if !name.isEmpty { return name }
-        let full = NSFullUserName()
-        return full.isEmpty ? "Your Name" : full
+        name.isEmpty ? "Casimir" : name
     }
 
     /// Arc's "tombstone" portrait: a tall dome — large top radii, slight
@@ -30,11 +30,33 @@ struct ProfilePane: View {
             style: .continuous)
     }
 
+    /// The portrait fill: the chosen character, or a quiet placeholder
+    /// silhouette prompting one to be picked.
+    @ViewBuilder
+    private var portrait: some View {
+        ZStack {
+            DC.Ink.surface
+            if let glyph {
+                SephrGlyphView(glyph: glyph, size: 118)
+                    .foregroundStyle(DC.Ink.ink)
+            } else {
+                Image(systemName: "person.fill")
+                    .font(.system(size: 64, weight: .regular))
+                    .foregroundStyle(DC.Ink.ink4)
+            }
+        }
+    }
+
+    private func set(_ g: SephrGlyph?) {
+        glyph = g
+        SephrPreferences.profileCharacter = g?.storageValue ?? ""
+    }
+
     var body: some View {
         VStack(spacing: DC.Space.xl) {
-            // Portrait card
+            // Portrait card — the chosen character is the portrait.
             VStack(spacing: DC.Space.l) {
-                DCGradientAvatar(seed: avatar)
+                portrait
                     .frame(width: 196, height: 232)
                     .clipShape(arch)
                     .overlay(arch.stroke(DC.Ink.hairline,
@@ -50,48 +72,54 @@ struct ProfilePane: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, DC.Space.xl)
-            .dcGlass(cornerRadius: 24)
+            .dcGlass()
 
-            // Swatch picker — the little profile images.
-            DCSection(title: "PROFILE IMAGE") {
-                HStack(spacing: DC.Space.m) {
-                    ForEach(0..<6, id: \.self) { i in
-                        Button {
-                            avatar = i
-                            SephrPreferences.profileAvatarSeed = i
-                        } label: {
-                            DCGradientAvatar(seed: i)
-                                .frame(width: 44, height: 44)
-                                .clipShape(Circle())
-                                .overlay(
-                                    Circle().strokeBorder(
-                                        avatar == i ? DC.Ink.ink
-                                                    : DC.Ink.hairline,
-                                        lineWidth: avatar == i ? 2
-                                                   : DC.hairlineWidth))
+            // Character picker — emoji, SF Symbols, and Unicode glyphs.
+            DCSection(title: "CHARACTER") {
+                DCRow("Character",
+                      subtitle: "An emoji, SF Symbol, or symbol shown on "
+                              + "your profile card.") {
+                    HStack(spacing: DC.Space.m) {
+                        if glyph != nil {
+                            Button("Remove") { set(nil) }
+                                .buttonStyle(DCSecondaryButtonStyle())
                         }
-                        .buttonStyle(.plain)
-                        .help("Profile swatch \(i + 1)")
+                        Button(glyph == nil ? "Choose Character…"
+                                            : "Change Character…") {
+                            pickerShown = true
+                        }
+                        .buttonStyle(DCPrimaryButtonStyle())
+                        .popover(isPresented: $pickerShown,
+                                 arrowEdge: .bottom) {
+                            SephrCharacterPicker { picked in
+                                set(picked)
+                                pickerShown = false
+                            }
+                        }
                     }
-                    Spacer(minLength: 0)
                 }
-                .padding(DC.Space.l)
-                .dcGlass()
             }
 
             // Display name
             DCSection(title: "DISPLAY NAME") {
                 DCRow("Name",
                       subtitle: "Shown on your profile card.") {
-                    TextField(NSFullUserName(), text: $name)
+                    TextField("Casimir", text: $name)
                         .textFieldStyle(DCTextFieldStyle())
                         .frame(maxWidth: 220)
                         .onChange(of: name) { _, v in
-                            SephrPreferences.profileDisplayName = v
+                            // Debounce so a 10-char/sec typing burst no
+                            // longer fires 10 UserDefaults writes (each
+                            // posting NSUserDefaultsDidChangeNotification +
+                            // KVO globally).
+                            nameDebouncer.schedule {
+                                SephrPreferences.profileDisplayName = v
+                            }
                         }
                 }
             }
         }
+        .onDisappear { nameDebouncer.flush() }
     }
 }
 
@@ -105,6 +133,7 @@ struct GeneralPane: View {
     @State private var confirmOnQuit = SephrPreferences.confirmOnQuit
     @State private var autoCheck = true
     @State private var isDefaultBrowser = SephrDefaultBrowser.shared.isDefault
+    @StateObject private var customURLDebouncer = TextDebouncer()
 
     var body: some View {
         VStack(spacing: DC.Space.xl) {
@@ -156,7 +185,10 @@ struct GeneralPane: View {
                             .textFieldStyle(DCTextFieldStyle())
                             .frame(maxWidth: 280)
                             .onChange(of: customURL) { _, v in
-                                SephrPreferences.customSearchURL = v
+                                // Debounced — see ProfilePane's name field.
+                                customURLDebouncer.schedule {
+                                    SephrPreferences.customSearchURL = v
+                                }
                             }
                     }
                 }
@@ -231,6 +263,7 @@ struct GeneralPane: View {
                 .automaticallyChecksForUpdates ?? false
             isDefaultBrowser = SephrDefaultBrowser.shared.isDefault
         }
+        .onDisappear { customURLDebouncer.flush() }
     }
 }
 
@@ -239,8 +272,25 @@ struct GeneralPane: View {
 struct TabsPane: View {
     @State private var archiveDays = SephrPreferences.archiveAfterDays
     @State private var suspendSeconds = SephrPreferences.suspendAfterSeconds
+    @State private var sleepMinutes = SephrPreferences.sleepAfterMinutes
+    @State private var hoverPeek = SephrPreferences.peekOnSidebarHover
+    private let sleepOptions = [0, 15, 30, 60]
 
     var body: some View {
+        VStack(spacing: DC.Space.xl) {
+        DCSection(title: "PREVIEW") {
+            DCRow("Preview tab on hover",
+                  subtitle: "Show a live peek of a sidebar tab when "
+                          + "the cursor lingers on it.") {
+                Toggle("", isOn: $hoverPeek)
+                    .toggleStyle(DCToggleStyle())
+                    .labelsHidden()
+                    .onChange(of: hoverPeek) { _, v in
+                        SephrPreferences.peekOnSidebarHover = v
+                    }
+            }
+        }
+
         DCSection(title: "LIFECYCLE") {
             DCRow("Archive after",
                   subtitle: "Idle tabs move to the archive after this "
@@ -275,6 +325,25 @@ struct TabsPane: View {
                         }
                 }
             }
+
+            DCRow("Put inactive tabs to sleep after",
+                  subtitle: "Hidden tabs release their renderer to save "
+                          + "memory — they reload on click.") {
+                Picker("", selection: $sleepMinutes) {
+                    ForEach(sleepOptions, id: \.self) { m in
+                        Text(m == 0 ? "Off"
+                             : m == 30 ? "30 minutes (default)"
+                             : "\(m) minutes").tag(m)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .tint(DC.Ink.ink)
+                .onChange(of: sleepMinutes) { _, v in
+                    SephrPreferences.sleepAfterMinutes = v
+                }
+            }
+        }
         }
     }
 }
@@ -282,30 +351,22 @@ struct TabsPane: View {
 // MARK: — Privacy
 
 struct PrivacyPane: View {
-    @State private var blockAds = SephrPreferences.blockAds
-    @State private var blockTrackers = SephrPreferences.blockTrackers
+    @State private var uBlockEnabled = SephrPreferences.blockAds
 
     var body: some View {
         DCSection(title: "CONTENT BLOCKING") {
-            DCRow("Block ads",
-                  subtitle: "EasyList rules applied at the network "
-                          + "layer.") {
-                Toggle("", isOn: $blockAds)
+            DCRow("uBlock Origin",
+                  subtitle: "Built-in ad and tracker blocking powered by "
+                          + "uBlock Origin.") {
+                Toggle("", isOn: $uBlockEnabled)
                     .toggleStyle(DCToggleStyle())
                     .labelsHidden()
-                    .onChange(of: blockAds) { _, v in
+                    .onChange(of: uBlockEnabled) { _, v in
                         SephrPreferences.blockAds = v
-                    }
-            }
-
-            DCRow("Block trackers",
-                  subtitle: "EasyPrivacy rules applied alongside ad "
-                          + "blocking.") {
-                Toggle("", isOn: $blockTrackers)
-                    .toggleStyle(DCToggleStyle())
-                    .labelsHidden()
-                    .onChange(of: blockTrackers) { _, v in
                         SephrPreferences.blockTrackers = v
+                        Task { @MainActor in
+                            SephrContentBlocking.applyPreference()
+                        }
                     }
             }
         }
@@ -417,10 +478,11 @@ struct IconPane: View {
             SephrPreferences.appIconIndex = index
         } label: {
             ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                 style: .continuous)
                     .fill(DC.Ink.surface)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 16,
+                        RoundedRectangle(cornerRadius: DC.Radius.standard,
                                          style: .continuous)
                             .strokeBorder(
                                 isSelected ? DC.Ink.ink : DC.Ink.hairline,

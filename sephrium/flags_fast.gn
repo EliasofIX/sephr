@@ -31,6 +31,14 @@ treat_warnings_as_errors = false
 use_official_google_api_keys = false
 use_unofficial_version_number = false
 
+# ── Proprietary media codecs (H.264/AVC, AAC, MP3) + HLS ───────────────────
+# Must stay in sync with flags.gn. ffmpeg_branding="Chrome" pulls in the
+# H.264/AAC/MP3 decoders; proprietary_codecs=true enables the HLS demuxer +
+# platform decode paths. Without these, H.264/AAC sites (X.com/Twitter
+# video, many embeds) won't play. H.264/AAC are patent-licensed (Via LA).
+ffmpeg_branding = "Chrome"
+proprietary_codecs = true
+
 # ── macOS target ──────────────────────────────────────────────────────────
 target_os = "mac"
 target_cpu = "arm64"

@@ -79,21 +79,15 @@ SephriumWebContentsDestroy(SephriumWebContentsRef web_contents);
 SEPHRIUM_EXPORT void*
 SephriumWebContentsGetNativeView(SephriumWebContentsRef web_contents);
 
-// Returns an unretained NSWindow* (cast to void*) — the NSWindow that owns
-// the WebContents' rendering surface. CAL embeds this as a borderless
-// child window of the embedder's main NSWindow so the renderer's compositor
-// (which is bound to its host NSWindow) keeps painting into a window that
-// visually sits over the embedder's content area. Returns NULL if the host
-// window can't be obtained (e.g. headless Browser teardown).
-SEPHRIUM_EXPORT void*
-SephriumWebContentsGetHostNSWindow(SephriumWebContentsRef web_contents);
-
 SEPHRIUM_EXPORT void
 SephriumWebContentsLoadURL(SephriumWebContentsRef web_contents, const char* url);
 
 SEPHRIUM_EXPORT void SephriumWebContentsGoBack(SephriumWebContentsRef);
 SEPHRIUM_EXPORT void SephriumWebContentsGoForward(SephriumWebContentsRef);
 SEPHRIUM_EXPORT void SephriumWebContentsReload(SephriumWebContentsRef);
+// Hard reload (Cmd+Shift+R) — revalidates main + subresources past the cache.
+SEPHRIUM_EXPORT void SephriumWebContentsReloadBypassingCache(
+    SephriumWebContentsRef);
 SEPHRIUM_EXPORT void SephriumWebContentsStop(SephriumWebContentsRef);
 
 SEPHRIUM_EXPORT void
@@ -121,6 +115,19 @@ SEPHRIUM_EXPORT char* SephriumWebContentsCopyTitle(SephriumWebContentsRef);
 
 // Returns 1 while the page is playing audio (used for sleep exemption).
 SEPHRIUM_EXPORT int SephriumWebContentsIsAudible(SephriumWebContentsRef);
+
+// Returns 1 if all audio output from the page is muted via
+// SephriumWebContentsSetAudioMuted. Muting silences local output only — the
+// page keeps producing audio — so a muted-but-playing tab still reports
+// IsAudible == 1.
+SEPHRIUM_EXPORT int SephriumWebContentsIsAudioMuted(SephriumWebContentsRef);
+
+// Mutes (muted=1) or unmutes (muted=0) all audio output from the page.
+// Idempotent. This is the per-tab mute a browser UI's speaker toggle wants:
+// it silences the sound reaching the speakers without pausing the media, so
+// the page stays "audible" and the indicator stays visible while muted.
+SEPHRIUM_EXPORT void
+SephriumWebContentsSetAudioMuted(SephriumWebContentsRef, int muted);
 
 typedef void (*SephriumNavCallback)(void* ctx,
                                    const char* url,
@@ -156,6 +163,63 @@ SEPHRIUM_EXPORT void
 SephriumWebContentsSetLoadingCallback(SephriumWebContentsRef,
                                      SephriumLoadingCallback callback,
                                      void* ctx);
+
+// Audio state — fires on the UI thread whenever the page starts or stops
+// emitting audio (Chromium's WebContentsObserver::OnAudioStateChanged).
+// `is_audible` is 1 while one or more frames are producing audio, 0 once the
+// page falls silent. Muting does NOT flip this to 0 (the page keeps producing
+// audio, it's only silenced locally), so the embedder can keep its audio
+// indicator visible — switching its icon to "muted" — for the whole time
+// muted media plays. Drives a tab "playing audio" badge without polling.
+typedef void (*SephriumAudioStateCallback)(void* ctx, int is_audible);
+
+SEPHRIUM_EXPORT void
+SephriumWebContentsSetAudioStateCallback(SephriumWebContentsRef,
+                                        SephriumAudioStateCallback callback,
+                                        void* ctx);
+
+// ---- Media session ---------------------------------------------------------
+// The page's media session (content::MediaSession): real play/pause state,
+// the metadata sites publish via the Media Session API (title / artist /
+// source), and track-skip transport. This is what a browser-level "now
+// playing" control wants — IsAudible only says "sound is coming out";
+// the media session knows whether playback is merely *paused* and what is
+// actually playing.
+
+// Fires on the UI thread whenever any facet of the media-session snapshot
+// changes (playback state, metadata, or available actions). Also fires once
+// with the current state right after registration. All strings are transient
+// UTF-8 — copy before returning — and are empty (never NULL) when the page
+// published no value.
+//   is_controllable  1 while the session has active media the browser may
+//                    control (the signal to show/hide a now-playing UI).
+//   is_playing       1 = playing, 0 = paused/stopped.
+//   title/artist     Media Session API metadata; falls back to empty when the
+//                    site sets none (embedder should fall back to tab title).
+//   source_title     human-readable origin (e.g. "music.youtube.com").
+//   can_prev/can_next  1 when the page registered previoustrack / nexttrack
+//                    handlers, so skip buttons can disable themselves.
+typedef void (*SephriumMediaSessionCallback)(void* ctx,
+                                             int is_controllable,
+                                             int is_playing,
+                                             const char* title,
+                                             const char* artist,
+                                             const char* source_title,
+                                             int can_prev_track,
+                                             int can_next_track);
+
+SEPHRIUM_EXPORT void
+SephriumWebContentsSetMediaSessionCallback(SephriumWebContentsRef,
+                                          SephriumMediaSessionCallback callback,
+                                          void* ctx);
+
+// Transport controls. All no-op safely when the page has no media session
+// or the action isn't supported (Chromium's MediaSession contract).
+SEPHRIUM_EXPORT void SephriumWebContentsMediaResume(SephriumWebContentsRef);
+SEPHRIUM_EXPORT void SephriumWebContentsMediaSuspend(SephriumWebContentsRef);
+SEPHRIUM_EXPORT void SephriumWebContentsMediaNextTrack(SephriumWebContentsRef);
+SEPHRIUM_EXPORT void
+SephriumWebContentsMediaPreviousTrack(SephriumWebContentsRef);
 
 // Context-menu "Open Link in New Tab" — fires when the user picks that
 // item from the right-click menu. Embedder spawns a real Sephr tab in

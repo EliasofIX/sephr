@@ -157,7 +157,7 @@ struct OnboardingView: View {
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(DC.Ink.ink)
                 .frame(width: 40, height: 40)
-                .dcSurface(cornerRadius: 12)
+                .dcSurface()
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(DC.TypeScale.headline)
@@ -170,7 +170,7 @@ struct OnboardingView: View {
             Spacer(minLength: 0)
         }
         .padding(DC.Space.l)
-        .dcSurface(cornerRadius: 20)
+        .dcSurface()
     }
 
     private var pageDots: some View {

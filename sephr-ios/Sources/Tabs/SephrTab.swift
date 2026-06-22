@@ -31,6 +31,16 @@ struct SephrTab: Identifiable, Codable, Equatable {
         self.isIncognito = isIncognito
     }
 
+    /// True when the tab has a real http(s) page to show — not `nil`,
+    /// `about:blank`, or other placeholders that render as a white sheet.
+    var hasBrowsableURL: Bool {
+        guard let url else { return false }
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        guard scheme == "http" || scheme == "https" else { return false }
+        if url.host()?.isEmpty != false { return false }
+        return true
+    }
+
     /// Display title: page title, else host, else a placeholder.
     var displayTitle: String {
         if !title.isEmpty { return title }

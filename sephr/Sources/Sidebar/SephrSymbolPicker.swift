@@ -100,7 +100,7 @@ private final class SephrSymbolCell: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 7
+        layer?.cornerRadius = DC.Radius.standard
 
         imageView.image = NSImage(systemSymbolName: symbol,
                                    accessibilityDescription: symbol)

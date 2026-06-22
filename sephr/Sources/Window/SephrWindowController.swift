@@ -1,5 +1,7 @@
 import AppKit
 import CAL
+import SephrKit
+import SwiftUI
 
 final class SephrWindowController: NSWindowController {
 
@@ -7,19 +9,40 @@ final class SephrWindowController: NSWindowController {
     private var contentHostView: SephrSplitDropView!
     private var splitController: SephrSplitViewController?
     private var activeWebView: CALWebView?
+    /// Hosting view for the active Note canvas, and which note it shows.
+    /// nil while a web tab (or split) is on screen. Exactly one of
+    /// `activeWebView` / `noteHost` / `splitController` is non-nil.
+    private var noteHost: NSView?
+    private var shownNoteID: UUID?
     private var sidebarWidthConstraint: NSLayoutConstraint!
     private var hoverEdge: SephrSidebarHoverEdge?
     private var resizer: SephrSidebarResizer?
     var createFolderPopover: NSPopover?
     private var resizeStartWidth: CGFloat = 0
     private var floatingSidebar: SephrFloatingSidebar?
+    /// Traffic lights stay hidden until the floating overlay's slide-in
+    /// finishes — showing them on hover (before the card lands) made the
+    /// chrome feel detached from the panel. Bumped on dismiss so a
+    /// slide-in completion can't re-show lights after a fast exit.
+    private var floatingOverlayChromeVisible = false
+    private var floatingOverlayMotionGeneration = 0
     private var loadingBar: SephrLoadingBar?
     /// Arc-style link peek — a live floating web view of a Shift+hovered
     /// link, drawn over the page area. nil when no peek is showing.
     private var linkPeek: SephrLinkPeekOverlay?
+    /// Full-window library overlay (Manage Spaces + Notes / Downloads /
+    /// Archive). nil while the user is browsing normally.
+    private var libraryOverlay: SephrLibraryOverlay?
     /// Local NSEvent monitor that watches for Shift+click on a link (to
     /// summon a peek of it) and Esc (to dismiss one).
     private var linkPeekMonitor: Any?
+    /// Keeps the model→content sync subscriptions alive — see
+    /// `syncContentToActiveTab()`. We listen on TWO channels: the active-
+    /// change channel for plain tab switches (Cmd+1, sidebar click via
+    /// model, popup adoption) and the structure channel for close-promotes
+    /// where the page also has to swap to the newly-promoted active tab.
+    private var tabStructureToken: TabEventToken?
+    private var tabActiveToken: TabEventToken?
 
     /// Clamp range for live sidebar drag-resize. Below `minResizableWidth`
     /// the title-row toggle (76pt leading + 22pt width = 98pt to its
@@ -74,6 +97,21 @@ final class SephrWindowController: NSWindowController {
         self.init(window: window)
         setupViews()
         SephrKeyboardShortcutMonitor.shared.register(in: self)
+        // Any model mutation that changes the active tab must also swap
+        // the page on screen. Click paths call showTab explicitly, but
+        // model-only activations (an external link routed in while Sephr
+        // is the default browser, right-click "Open Link in New Tab", a
+        // cross-space move promoting a new active tab) only emit on the
+        // structure channel — without this sync the sidebar highlights
+        // the new tab while the window keeps showing the old page.
+        tabStructureToken = TabEventBus.shared.subscribeStructure {
+            [weak self] in
+            self?.syncContentToActiveTab()
+        }
+        tabActiveToken = TabEventBus.shared.subscribeActiveChange {
+            [weak self] in
+            self?.syncContentToActiveTab()
+        }
         restoreLastSpace()
     }
 
@@ -123,12 +161,19 @@ final class SephrWindowController: NSWindowController {
         // surrounding window is Liquid Glass. White background was
         // making the entire content area look like a separate window.
         contentHostView.layer?.backgroundColor = NSColor.clear.cgColor
-        contentHostView.layer?.cornerRadius = 10
+        contentHostView.layer?.cornerRadius = DC.Radius.standard
         contentHostView.layer?.masksToBounds = true
         cv.addSubview(contentHostView)
 
+        // Seed the sidebar at its persisted width, honoring compact mode.
+        // The stored `sidebarWidth` is the user's preferred *full* width,
+        // so a sidebar last left in compact mode must open at the 52pt
+        // strip rather than its full width.
+        let initialSidebarWidth = SephrPreferences.sidebarCompact
+            ? SephrSidebarView.compactWidth
+            : SephrSidebarView.preferredFullWidth
         sidebarWidthConstraint = sidebarView.widthAnchor
-            .constraint(equalToConstant: SephrPreferences.sidebarWidth)
+            .constraint(equalToConstant: initialSidebarWidth)
 
         NSLayoutConstraint.activate([
             sidebarView.topAnchor.constraint(equalTo: cv.topAnchor),
@@ -252,8 +297,14 @@ final class SephrWindowController: NSWindowController {
         guard let w = window,
               let btn = w.standardWindowButton(.closeButton),
               let frameView = btn.superview else { return }
-        defaultChromeY = frameView.frame.height - btn.frame.midY
-        sidebarView.setChromeTopOffset(defaultChromeY)
+        let chromeY = frameView.frame.height - btn.frame.midY
+        // Skip the constant write + sidebar relayout when nothing actually
+        // changed — windowDidResize/windowDidExitFullScreen fires this in
+        // a tight loop during live resize, and the value almost never
+        // changes (it's the standard window-button vertical offset).
+        guard chromeY != defaultChromeY else { return }
+        defaultChromeY = chromeY
+        sidebarView.setChromeTopOffset(chromeY)
     }
 
     // MARK: — Floating overlay (collapsed-state hover)
@@ -280,21 +331,35 @@ final class SephrWindowController: NSWindowController {
             self.hideFloatingSidebar()
         }
         floatingSidebar = fs
-        applyTrafficLightState()
-        // Align the overlay's chrome with the (now-shifted) traffic
-        // lights. The floating card's 8pt top inset cancels against the
-        // 8pt downward shift applied to the buttons, so the same
+        floatingOverlayChromeVisible = false
+        let motionGeneration = floatingOverlayMotionGeneration
+        // Align the overlay's chrome with the traffic-light line. The
+        // floating card's 8pt top inset cancels against the 8pt downward
+        // shift we apply once the slide-in completes, so the same
         // `defaultChromeY` we use for the main sidebar lands the
         // overlay's toggle / nav strip on the lights' line.
         fs.sidebar.setChromeTopOffset(defaultChromeY)
-        fs.slideIn()
+        cv.layoutSubtreeIfNeeded()
+        fs.slideIn { [weak self] in
+            guard let self,
+                  self.floatingSidebar === fs,
+                  self.floatingOverlayMotionGeneration == motionGeneration
+            else { return }
+            self.floatingOverlayChromeVisible = true
+            self.applyTrafficLightState()
+        }
     }
 
     private func hideFloatingSidebar() {
         guard let fs = floatingSidebar else { return }
-        floatingSidebar = nil
-        fs.slideOut { fs.removeFromSuperview() }
+        floatingOverlayMotionGeneration += 1
+        floatingOverlayChromeVisible = false
         applyTrafficLightState()
+        fs.slideOut { [weak self] in
+            fs.removeFromSuperview()
+            guard let self, self.floatingSidebar === fs else { return }
+            self.floatingSidebar = nil
+        }
     }
 
     // MARK: — Traffic-light chrome
@@ -306,12 +371,14 @@ final class SephrWindowController: NSWindowController {
     ///                                       floating over a blank page)
     ///   - Sidebar collapsed, overlay shown: visible, shifted so they
     ///                                       sit inside the floating card
+    ///                                       (only after slide-in settles)
     private func applyTrafficLightState() {
         guard let w = window else { return }
         let collapsed = sidebarWidthConstraint.constant <= 0
-        let overlayVisible = floatingSidebar != nil
-        let shouldShow = !collapsed || overlayVisible
-        let shouldShift = collapsed && overlayVisible
+        let overlayChromeActive = floatingSidebar != nil
+            && floatingOverlayChromeVisible
+        let shouldShow = !collapsed || overlayChromeActive
+        let shouldShift = collapsed && overlayChromeActive
 
         for type in Self.trafficLightButtonTypes {
             if let btn = w.standardWindowButton(type) {
@@ -343,8 +410,9 @@ final class SephrWindowController: NSWindowController {
         setTrafficLightsShifted(true)
         // Also re-assert visibility, in case the layout pass un-hid them.
         let collapsed = sidebarWidthConstraint.constant <= 0
-        let overlayVisible = floatingSidebar != nil
-        let shouldShow = !collapsed || overlayVisible
+        let overlayChromeActive = floatingSidebar != nil
+            && floatingOverlayChromeVisible
+        let shouldShow = !collapsed || overlayChromeActive
         for type in Self.trafficLightButtonTypes {
             w.standardWindowButton(type)?.isHidden = !shouldShow
         }
@@ -362,19 +430,101 @@ final class SephrWindowController: NSWindowController {
         loadingBar?.setLoading(tab.isLoading)
     }
 
+    /// Model→content sync, driven by the structure channel. `activateTab`
+    /// always emits one, so this catches every activation that doesn't go
+    /// through an explicit `showTab` call site. Idempotent: when the
+    /// active tab's view is already on screen it does nothing.
+    private func syncContentToActiveTab() {
+        guard let active = SephrTabModel.shared.activeTab() else {
+            // The space's last tab closed. Web views detach in closeTab
+            // itself; a note canvas is owned here, so drop it rather
+            // than leaving a dead document on screen.
+            removeNoteHost()
+            return
+        }
+        // A live split stays up as long as the active tab is one of its
+        // panes — pane focus changes must not collapse it to a single
+        // view. An activation OUTSIDE the split falls through and
+        // replaces it, same as a sidebar tab click does.
+        if splitController != nil,
+           SephrSplitManager.shared.isInActiveSplit(active.id) { return }
+        if active.kind == .note {
+            if noteHost != nil, shownNoteID == active.id { return }
+        } else if let shown = activeWebView, shown === active.webView {
+            return
+        }
+        showTab(active)
+    }
+
+    /// Tear down the hosted note canvas, if any. SwiftUI's onDisappear
+    /// flushes the note's pending document write.
+    private func removeNoteHost() {
+        noteHost?.removeFromSuperview()
+        noteHost = nil
+        shownNoteID = nil
+    }
+
+    /// Show a Note tab: swap the native canvas into the content area in
+    /// place of whatever web view / split / other note is up. Mirrors
+    /// `showTab`'s capture-then-detach dance for the outgoing web view so
+    /// switching web → note still refreshes the web tab's thumbnail.
+    private func showNote(_ tab: SephrTab) {
+        if noteHost != nil, shownNoteID == tab.id {
+            loadingBar?.setLoading(false)
+            return
+        }
+        let outgoingView = activeWebView
+        let outgoingTab = outgoingView.flatMap {
+            SephrTabModel.shared.tab(owning: $0)
+        }
+        splitController?.view.removeFromSuperview()
+        splitController = nil
+        removeNoteHost()
+
+        let host = NSHostingView(rootView: SephrNoteCanvas(tab: tab))
+        host.frame = contentHostView.bounds
+        host.autoresizingMask = [.width, .height]
+        // On top of the outgoing web view — its renderer keeps painting
+        // underneath until the thumbnail capture below detaches it.
+        contentHostView.addSubview(host)
+        noteHost = host
+        shownNoteID = tab.id
+        activeWebView = nil
+
+        captureThenDetach(outgoingView: outgoingView,
+                          outgoingTab: outgoingTab)
+        loadingBar?.setLoading(false)
+    }
+
     func showTab(_ tab: SephrTab) {
+        if tab.kind == .note {
+            showNote(tab)
+            return
+        }
         // The outgoing view stays attached while its thumbnail is being
         // captured — see `swapInTab(...)`. Detaching synchronously
         // would tear the renderer's compositor down before
         // `CopyFromSurface` could return real pixels, which is exactly
         // why peeks on inactive tabs were coming back blank.
         let outgoingView = activeWebView
-        let outgoingTab = outgoingView.flatMap { v in
-            SephrTabModel.shared.allTabs.first(where: { $0.webView === v })
+        // Re-showing the view that's already on screen (a sidebar click
+        // or command-bar open whose activateTab let the model-driven
+        // sync above swap first) must NOT continue into the capture
+        // path: outgoing === incoming there, and captureThenDetach's
+        // deferred removeFromSuperview would rip the live page out of
+        // the window. activeWebView is nil while a split is up, so this
+        // never short-circuits a split teardown.
+        if tab.webView != nil, tab.webView === outgoingView {
+            loadingBar?.setLoading(tab.isLoading)
+            return
+        }
+        let outgoingTab = outgoingView.flatMap {
+            SephrTabModel.shared.tab(owning: $0)
         }
 
         splitController?.view.removeFromSuperview()
         splitController = nil
+        removeNoteHost()
 
         let wv = tab.getOrCreateWebView()
         wv.frame = contentHostView.bounds
@@ -436,6 +586,7 @@ final class SephrWindowController: NSWindowController {
         splitController = nil
         activeWebView?.removeFromSuperview()
         activeWebView = nil
+        removeNoteHost()
 
         // Record the persistent group so the sidebar renders the combined
         // pill and the gesture refuses to start a second split.
@@ -467,19 +618,55 @@ final class SephrWindowController: NSWindowController {
     private func restoreLastSpace() {
         let space = SephrSpaceManager.shared.currentSpace
         SephrSpaceThemeEngine.shared.apply(space)
-        if let active = SephrTabModel.shared.tabs(in: space)
-            .first(where: { $0.isActive })
-            ?? SephrTabModel.shared.tabs(in: space).first {
+        // Resolve `tabs(in: space)` once — the prior code paid the O(N)
+        // filter twice (active fallback + .first), on the cold-launch
+        // path where every saved tab is in `allTabs`.
+        let inSpace = SephrTabModel.shared.tabs(in: space)
+        if let active = inSpace.first(where: { $0.isActive }) ?? inSpace.first {
             showTab(active)
             return
         }
-        // No prior tabs: open a default so the window isn't blank.
-        // about:blank avoids any first-load crash; the user types a real
-        // URL in the sidebar URL field to actually go somewhere.
-        let initial = SephrTabModel.shared.newTab(in: space,
-                                                  url: "https://example.com")
+        // No prior tabs: open an empty tab so the window isn't blank.
+        // newTab defaults to about:blank — no page loads; the user types a
+        // real URL in the sidebar URL field (or via the search palette) to
+        // actually go somewhere.
+        let initial = SephrTabModel.shared.newTab(in: space)
         showTab(initial)
     }
+
+    // MARK: — Library overlay (Manage Spaces + Notes / Downloads / Archive)
+
+    func presentLibraryOverlay(section: SephrLibrarySection = .spaces) {
+        guard libraryOverlay == nil, let cv = window?.contentView else { return }
+        hideFloatingSidebar()
+        dismissLinkPeek()
+
+        let overlay = SephrLibraryOverlay(initialSection: section)
+        overlay.onDismiss = { [weak self] in self?.dismissLibraryOverlay() }
+        cv.addSubview(overlay, positioned: .above, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: cv.topAnchor),
+            overlay.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
+            overlay.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
+        ])
+        libraryOverlay = overlay
+        resizer?.isHidden = true
+        hoverEdge?.isHidden = true
+        overlay.layoutSubtreeIfNeeded()
+        overlay.slideIn()
+    }
+
+    func dismissLibraryOverlay() {
+        guard let overlay = libraryOverlay else { return }
+        libraryOverlay = nil
+        overlay.slideOut { overlay.removeFromSuperview() }
+        updateResizerVisibility()
+        let collapsed = sidebarWidthConstraint.constant <= 0
+        hoverEdge?.isHidden = !collapsed
+    }
+
+    var isLibraryOverlayVisible: Bool { libraryOverlay != nil }
 }
 
 extension SephrWindowController: NSWindowDelegate {
@@ -497,16 +684,18 @@ extension SephrWindowController: NSWindowDelegate {
         persistFrame()
     }
 
-    /// NSWindow's built-in frame autosave is lazy — it writes through
-    /// the standard UserDefaults sync cadence and may be lost if the
-    /// app exits abnormally (Chromium overrides SIGTERM, so anything
-    /// other than a Cocoa Cmd+Q can skip the autosave flush). Saving
-    /// explicitly on every resize/move + synchronizing defaults
-    /// guarantees the latest frame is on disk before the next launch.
+    /// NSWindow's built-in frame autosave is lazy. We still mark the
+    /// frame on every resize/move so the next launch has the latest
+    /// known geometry, but the per-event `UserDefaults.synchronize()`
+    /// is gone — at live-resize cadence it was an XPC round-trip to
+    /// `cfprefsd` and a plist write 60 times a second for no real
+    /// crash-safety win (a synchronize before exit covers the same
+    /// scenario without the steady-state spam). The flush is now wired
+    /// up via the `NSApplication.willTerminateNotification` observer in
+    /// `SephrApp.main`.
     private func persistFrame() {
         guard let window else { return }
         window.saveFrame(usingName: "SephrMainWindow")
-        UserDefaults.standard.synchronize()
     }
 }
 
@@ -516,11 +705,15 @@ extension SephrWindowController: SephrSplitDropViewDelegate {
         // Need an active tab to anchor the left pane, a *different* tab to
         // drop on the right, and no split already up. The dropped tab must
         // still exist in the model (the drag could outlive a close).
+        // Splits are web-only: both the anchor pane and the dropped tab
+        // must host a WebContents — a note canvas has no split pane.
         guard splitController == nil,
               !SephrSplitManager.shared.hasGroup,   // one split group at a time
               let active = SephrTabModel.shared.activeTab(),
+              active.kind == .web,
               active.id != tabID,
-              SephrTabModel.shared.allTabs.contains(where: { $0.id == tabID })
+              let dropped = SephrTabModel.shared.tab(withID: tabID),
+              dropped.kind == .web
         else { return false }
         return true
     }
@@ -528,8 +721,9 @@ extension SephrWindowController: SephrSplitDropViewDelegate {
     func splitDropView(_ view: SephrSplitDropView,
                        didRequestSplitWith tabID: UUID) {
         guard let primary = SephrTabModel.shared.activeTab(),
-              let secondary = SephrTabModel.shared.allTabs
-                .first(where: { $0.id == tabID }),
+              primary.kind == .web,
+              let secondary = SephrTabModel.shared.tab(withID: tabID),
+              secondary.kind == .web,
               primary.id != secondary.id
         else { return }
         showSplit(primary: primary, secondary: secondary)
@@ -552,6 +746,14 @@ extension SephrWindowController: SephrSidebarViewDelegate {
     func sidebarDidRequestNewTab() {
         let space = SephrSpaceManager.shared.currentSpace
         _ = SephrTabModel.shared.newTab(in: space)
+    }
+
+    func sidebarDidRequestNewNote() {
+        // newTab → activateTab emits on the structure channel, which
+        // syncContentToActiveTab turns into the canvas swap — no explicit
+        // showTab needed here.
+        let space = SephrSpaceManager.shared.currentSpace
+        _ = SephrTabModel.shared.newNote(in: space)
     }
 
     func sidebarDidRequestCommandBar() {
@@ -600,11 +802,19 @@ extension SephrWindowController: SephrSidebarViewDelegate {
     }
 
     func sidebarWidthDidChange(_ w: CGFloat) {
-        SephrPreferences.sidebarWidth = w
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            sidebarWidthConstraint.animator().constant = w
+        // Do NOT persist `w` here. This fires for every mode transition
+        // (collapse → 0, compact → 52, expand → full), so writing it would
+        // clobber the user's preferred width with a transient value. The
+        // preferred width is persisted solely by the resizer drag
+        // (`grip.onDragEnded`), which only ever runs in full mode.
+        if SephrSidebarMotion.reduceMotion {
+            sidebarWidthConstraint.constant = w
+        } else {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = SephrSidebarMotion.snappyDuration
+                ctx.timingFunction = SephrSidebarMotion.snappyCurve
+                sidebarWidthConstraint.animator().constant = w
+            }
         }
         // Sidebar collapsed → arm the edge-hover trigger. Sidebar opened
         // back up → disarm and tear down any in-flight overlay.

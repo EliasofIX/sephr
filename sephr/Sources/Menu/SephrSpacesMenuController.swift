@@ -23,26 +23,29 @@ final class SephrSpacesMenuController: NSObject, NSMenuDelegate {
 
     private let spacesMenu = NSMenu(title: "Spaces")
 
-    /// Permanent self-heal. Chromium rebuilds `NSApp.mainMenu` at moments
-    /// we can't reliably predict (profile load, full-screen, AppKit's own
-    /// nib load racing our boot callback), and each rebuild drops our
-    /// top-level item. A cheap idempotent re-assert on a slow timer means
-    /// the Spaces menu reappears within ~1s of any wipe, instead of only
-    /// on the next app activation.
-    private var healTimer: Timer?
     private var verbose = ProcessInfo.processInfo.environment["SEPHR_MENU_DEBUG"] != nil
 
     private override init() {
         super.init()
         spacesMenu.delegate = self
         spacesMenu.autoenablesItems = false
+        // Self-heal on the precise moments Chromium rebuilds the menu bar
+        // (profile load, full-screen, AppKit nib load) instead of a 1Hz
+        // forever-Timer chewing the run loop. didBecomeActive covers any
+        // case the boot-time install missed; menuDidBeginTracking handles
+        // a rebuild that landed mid-session before the user clicked.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { SephrSpacesMenuController.shared.install() }
+        }
     }
 
     /// Inserts the Spaces menu into the main menu bar if it isn't there
-    /// already, and kicks off the self-heal timer on first call. Safe to
-    /// call repeatedly — it's a no-op when our item is already present.
+    /// already. Safe to call repeatedly — it's a no-op when our item is
+    /// already present.
     func install() {
-        defer { startSelfHeal() }
         guard let mainMenu = NSApp.mainMenu else {
             slog("install: NSApp.mainMenu is nil")
             return
@@ -57,17 +60,6 @@ final class SephrSpacesMenuController: NSObject, NSMenuDelegate {
         mainMenu.insertItem(item, at: idx)
         slog("inserted at \(idx); top-level now: " +
              mainMenu.items.map { "\"\($0.title)\"" }.joined(separator: ","))
-    }
-
-    private func startSelfHeal() {
-        guard healTimer == nil else { return }
-        let t = Timer(timeInterval: 1.0, repeats: true) { _ in
-            MainActor.assumeIsolated { SephrSpacesMenuController.shared.install() }
-        }
-        // .common so it keeps firing while the user interacts with menus
-        // / tracks the window, not just in the default run-loop mode.
-        RunLoop.main.add(t, forMode: .common)
-        healTimer = t
     }
 
     /// Slot the Spaces menu just before "Window" (falling back to before
@@ -158,6 +150,26 @@ final class SephrSpacesMenuController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let footerLabel = NSMenuItem(
+            title: "Sidebar Footer (4 max)",
+            action: nil, keyEquivalent: "")
+        footerLabel.isEnabled = false
+        menu.addItem(footerLabel)
+
+        for space in mgr.spaces {
+            let fav = NSMenuItem(
+                title: space.name,
+                action: #selector(toggleFavoriteSpace(_:)),
+                keyEquivalent: "")
+            fav.target = self
+            fav.representedObject = space.id.uuidString
+            fav.state = space.isFavorited ? .on : .off
+            fav.image = icon(for: space)
+            menu.addItem(fav)
+        }
+
+        menu.addItem(.separator())
+
         let manage = NSMenuItem(title: "Manage Spaces…",
                                 action: #selector(manageSpaces),
                                 keyEquivalent: "")
@@ -166,14 +178,31 @@ final class SephrSpacesMenuController: NSObject, NSMenuDelegate {
     }
 
     /// A small SF-symbol image tinted with the space's accent color, so
-    /// each row in the menu carries its space's identity.
+    /// each row in the menu carries its space's identity. Cached on
+    /// `(spaceID, symbol, colorHex)` so reopening the menu doesn't
+    /// re-allocate every row's NSImage just because the user clicked it.
+    private struct IconCacheKey: Hashable {
+        let id: UUID; let symbol: String; let colorHex: String
+    }
+    private var iconCache: [IconCacheKey: NSImage] = [:]
+
     private func icon(for space: SephrSpace) -> NSImage? {
+        let key = IconCacheKey(id: space.id,
+                                symbol: space.resolvedSymbol,
+                                colorHex: space.color.hexString)
+        if let cached = iconCache[key] { return cached }
         let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
             .applying(.init(paletteColors: [space.color]))
         let img = NSImage(systemSymbolName: space.resolvedSymbol,
                           accessibilityDescription: space.name)?
             .withSymbolConfiguration(config)
         img?.isTemplate = false
+        if let img { iconCache[key] = img }
+        // Bound the cache against long sessions where the user rotates
+        // through many spaces/colors; 64 covers every realistic combo.
+        if iconCache.count > 64 {
+            iconCache.removeAll(keepingCapacity: true)
+        }
         return img
     }
 
@@ -219,6 +248,14 @@ final class SephrSpacesMenuController: NSObject, NSMenuDelegate {
               let space = SephrSpaceManager.shared.spaces
                 .first(where: { $0.id == id }) else { return }
         SephrSpaceManager.shared.switchToSpace(space)
+    }
+
+    @objc private func toggleFavoriteSpace(_ sender: NSMenuItem) {
+        guard let idStr = sender.representedObject as? String,
+              let id = UUID(uuidString: idStr),
+              let space = SephrSpaceManager.shared.spaces
+                .first(where: { $0.id == id }) else { return }
+        SephrSpaceManager.shared.toggleFavorite(space)
     }
 
     @objc private func manageSpaces() {

@@ -21,7 +21,29 @@ import CAL
 /// thread and we hop onto the main actor explicitly to touch the tab model.
 final class SephrDefaultBrowser {
     static let shared = SephrDefaultBrowser()
-    private init() {}
+
+    /// Cached `isDefault` answer. Filled lazily on first read; invalidated
+    /// when the user runs `setAsDefault(...)` here, when the app comes back
+    /// to the foreground (the handler may have been changed elsewhere
+    /// while we were backgrounded), and whenever NSWorkspace itself fires
+    /// `didChangeDefaultApplications`. The probe itself is a synchronous
+    /// Launch Services XPC round-trip; without the cache it ran twice per
+    /// open of the Settings General tab (the @State init plus onAppear).
+    private var _cachedIsDefault: Bool?
+
+    private init() {
+        let nc = NotificationCenter.default
+        let invalidate: @Sendable (Notification) -> Void = { [weak self] _ in
+            self?._cachedIsDefault = nil
+        }
+        nc.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                       object: nil, queue: .main, using: invalidate)
+        // Pre-macOS-13 fallback path is .didChangeDefaultApplications via
+        // the workspace center; harmless on newer systems.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil, queue: .main, using: invalidate)
+    }
 
     // MARK: — Routing external opens into tabs
 
@@ -61,13 +83,17 @@ final class SephrDefaultBrowser {
     // MARK: — Default-browser status
 
     /// True when Sephr is the registered system handler for https — the
-    /// canonical "default web browser" signal on macOS.
+    /// canonical "default web browser" signal on macOS. Cached; see
+    /// `_cachedIsDefault` for the invalidation triggers.
     var isDefault: Bool {
+        if let cached = _cachedIsDefault { return cached }
         guard let probe = URL(string: "https://sephr.app/"),
               let handler = NSWorkspace.shared.urlForApplication(toOpen: probe)
-        else { return false }
-        return handler.resolvingSymlinksInPath().path
-             == Bundle.main.bundleURL.resolvingSymlinksInPath().path
+        else { _cachedIsDefault = false; return false }
+        let result = handler.resolvingSymlinksInPath().path
+                  == Bundle.main.bundleURL.resolvingSymlinksInPath().path
+        _cachedIsDefault = result
+        return result
     }
 
     /// Ask the system to make Sephr the default for http + https. macOS
@@ -87,6 +113,9 @@ final class SephrDefaultBrowser {
                 group.leave()
             }
         }
-        group.notify(queue: .main) { completion?(ok) }
+        group.notify(queue: .main) { [weak self] in
+            self?._cachedIsDefault = nil
+            completion?(ok)
+        }
     }
 }

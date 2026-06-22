@@ -35,9 +35,38 @@ final class SephrDownloadsObserver: ObservableObject {
     /// downloads (which arrive with a fresh id) still surface normally.
     func clearVisible() {
         for d in downloads { hiddenIDs.insert(d.identifier) }
-        // Re-run the filter pass against the cached snapshot so the
-        // panel updates immediately without waiting for the next
-        // Chromium-side push.
+        refreshFromCache()
+    }
+
+    /// Hide a single download from the panel without clearing the rest.
+    func hide(_ identifier: String) {
+        guard !identifier.isEmpty else { return }
+        hiddenIDs.insert(identifier)
+        refreshFromCache()
+    }
+
+    func open(_ download: CALDownload) {
+        guard download.state == .complete else { return }
+        let path = download.targetPath
+        guard !path.isEmpty,
+              FileManager.default.fileExists(atPath: path) else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    func revealInFinder(_ download: CALDownload) {
+        let pid = currentProfileID ?? SephrSpaceManager.shared.currentSpace.profileID
+        CALDownloads.sharedInstance(forProfile: pid)
+            .reveal(inFinder: download.identifier)
+    }
+
+    func copyLink(_ download: CALDownload) {
+        let link = download.sourceURL
+        guard !link.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(link, forType: .string)
+    }
+
+    private func refreshFromCache() {
         let pid = currentProfileID ?? SephrSpaceManager.shared.currentSpace.profileID
         update(CALDownloads.sharedInstance(forProfile: pid).currentDownloads())
     }
@@ -84,16 +113,24 @@ final class SephrDownloadsObserver: ObservableObject {
             downloadStarted.send()
         }
         lastActiveCount = newActiveCount
-        hasActive = !active.isEmpty
+        let newHasActive = !active.isEmpty
+        // Equality-guard @Published writes — the CALDownloads callback
+        // fires on every byte-tick during a download. Without the guards
+        // each tick re-publishes hasActive and activeProgress even when
+        // the rounded fraction is unchanged, waking every SwiftUI
+        // subscriber (toolbar pulse, panel list) for a no-op.
+        if hasActive != newHasActive { hasActive = newHasActive }
 
-        if hasActive {
+        let newProgress: Double
+        if newHasActive {
             let total = active.reduce(0) { $0 + max(0, $1.totalBytes) }
             let received = active.reduce(0) { $0 + max(0, $1.receivedBytes) }
-            activeProgress = total > 0
+            newProgress = total > 0
                 ? Double(received) / Double(total)
                 : 0
         } else {
-            activeProgress = 0
+            newProgress = 0
         }
+        if activeProgress != newProgress { activeProgress = newProgress }
     }
 }

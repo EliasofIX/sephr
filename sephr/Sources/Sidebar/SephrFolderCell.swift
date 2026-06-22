@@ -4,12 +4,54 @@ protocol SephrFolderCellDelegate: AnyObject {
     func folderCellDidSelect(_ folder: SephrTabFolder, tab: SephrTab)
 }
 
+/// Clickable folder icon + title row — toggles expand/collapse.
+private final class FolderHeaderRow: NSView {
+    var onClick: (() -> Void)?
+
+    private var hovered = false {
+        didSet { if hovered != oldValue { refreshHover() } }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = DC.Radius.standard
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func mouseDown(with event: NSEvent) { onClick?() }
+
+    override func resetCursorRects() {
+        discardCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow,
+                      .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = true }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+
+    private func refreshHover() {
+        layer?.backgroundColor = NSColor.white
+            .withAlphaComponent(hovered ? 0.10 : 0).cgColor
+    }
+}
+
 final class SephrFolderCell: NSView {
 
     let folder: SephrTabFolder
     weak var delegate: SephrFolderCellDelegate?
 
-    private let disclosure = SephrHoverButton()
+    private let headerRow = FolderHeaderRow()
     private let folderIcon = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let childStack = NSStackView()
@@ -21,13 +63,7 @@ final class SephrFolderCell: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
 
-        disclosure.image = NSImage(systemSymbolName:
-            folder.isExpanded ? "chevron.down" : "chevron.right",
-            accessibilityDescription: nil)
-        disclosure.symbolConfiguration = .init(pointSize: 9, weight: .semibold)
-        disclosure.contentTintColor = NSColor.secondaryLabelColor
-        disclosure.target = self
-        disclosure.action = #selector(toggle)
+        headerRow.onClick = { [weak self] in self?.toggle() }
 
         folderIcon.image = NSImage(systemSymbolName: folder.resolvedSymbol,
                                     accessibilityDescription: folder.name)
@@ -37,7 +73,12 @@ final class SephrFolderCell: NSView {
 
         titleLabel.stringValue = folder.name
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        titleLabel.textColor = NSColor.labelColor.withAlphaComponent(0.9)
+        // Plain dynamic `labelColor` (NOT `.withAlphaComponent`): applying
+        // an alpha to a dynamic system color flattens it against the base
+        // (light) appearance, so on the dark Liquid Glass chrome the title
+        // rendered near-black and unreadable in dark mode. The URL field's
+        // plain `labelColor` proves the dynamic value resolves bright here.
+        titleLabel.textColor = NSColor.labelColor
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         childStack.orientation = .vertical
@@ -45,37 +86,33 @@ final class SephrFolderCell: NSView {
         childStack.spacing = 1
         childStack.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(disclosure)
-        addSubview(folderIcon)
-        addSubview(titleLabel)
+        addSubview(headerRow)
+        headerRow.addSubview(folderIcon)
+        headerRow.addSubview(titleLabel)
         addSubview(childStack)
 
         NSLayoutConstraint.activate([
-            disclosure.leadingAnchor.constraint(
-                equalTo: leadingAnchor, constant: 4),
-            disclosure.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            disclosure.widthAnchor.constraint(equalToConstant: 14),
-            disclosure.heightAnchor.constraint(equalToConstant: 14),
+            headerRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            headerRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            headerRow.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            headerRow.heightAnchor.constraint(equalToConstant: 22),
 
-            folderIcon.leadingAnchor.constraint(
-                equalTo: disclosure.trailingAnchor, constant: 4),
-            folderIcon.centerYAnchor.constraint(
-                equalTo: disclosure.centerYAnchor),
+            folderIcon.leadingAnchor.constraint(equalTo: headerRow.leadingAnchor, constant: 4),
+            folderIcon.centerYAnchor.constraint(equalTo: headerRow.centerYAnchor),
             folderIcon.widthAnchor.constraint(equalToConstant: 16),
             folderIcon.heightAnchor.constraint(equalToConstant: 16),
 
             titleLabel.leadingAnchor.constraint(
                 equalTo: folderIcon.trailingAnchor, constant: 6),
-            titleLabel.centerYAnchor.constraint(
-                equalTo: disclosure.centerYAnchor),
+            titleLabel.centerYAnchor.constraint(equalTo: headerRow.centerYAnchor),
             titleLabel.trailingAnchor.constraint(
-                equalTo: trailingAnchor, constant: -8),
+                equalTo: headerRow.trailingAnchor, constant: -4),
 
             childStack.leadingAnchor.constraint(
-                equalTo: leadingAnchor, constant: 22),
+                equalTo: leadingAnchor, constant: 8),
             childStack.trailingAnchor.constraint(equalTo: trailingAnchor),
             childStack.topAnchor.constraint(
-                equalTo: disclosure.bottomAnchor, constant: 2),
+                equalTo: headerRow.bottomAnchor, constant: 2),
             childStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])
 
@@ -92,8 +129,10 @@ final class SephrFolderCell: NSView {
     @MainActor private func reload() {
         childStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         guard folder.isExpanded else { return }
-        for tab in SephrTabModel.shared.allTabs
-            where tab.folderID == folder.id {
+        // O(1) cached lookup instead of a full `allTabs` scan per folder.
+        // The cache lives on SephrTabModel and invalidates on any
+        // structural change.
+        for tab in SephrTabModel.shared.tabs(inFolder: folder.id) {
             let cell = SephrTabCell(tab: tab)
             cell.delegate = self
             cell.setCompact(compact)
@@ -103,9 +142,6 @@ final class SephrFolderCell: NSView {
 
     @objc private func toggle() {
         folder.isExpanded.toggle()
-        disclosure.image = NSImage(systemSymbolName:
-            folder.isExpanded ? "chevron.down" : "chevron.right",
-            accessibilityDescription: nil)
         reload()
     }
 
@@ -113,8 +149,8 @@ final class SephrFolderCell: NSView {
         // Defer to a child cell if the click landed on a tab inside the
         // folder — the tab cell has its own context menu.
         let p = convert(event.locationInWindow, from: nil)
-        if let hit = hitTest(p), hit !== self, hit !== titleLabel,
-           hit !== disclosure {
+        if let hit = hitTest(p), hit !== self, hit !== headerRow,
+           hit !== titleLabel, hit !== folderIcon {
             super.rightMouseDown(with: event)
             return
         }
@@ -169,6 +205,15 @@ extension SephrFolderCell: SephrTabCellDelegate {
     func tabCellDidPin(_ cell: SephrTabCell) {
         SephrTabModel.shared.pinTab(cell.tab, pinned: !cell.tab.isPinned)
     }
+    func tabCellDidDuplicate(_ cell: SephrTabCell) {
+        SephrTabModel.shared.duplicateTab(cell.tab)
+    }
+    func tabCellDidCloseOthers(_ cell: SephrTabCell) {
+        SephrTabModel.shared.closeOtherTabs(keeping: cell.tab)
+    }
+    func tabCellDidCloseToRight(_ cell: SephrTabCell) {
+        SephrTabModel.shared.closeTabsBelow(cell.tab)
+    }
 }
 
 // MARK: — Drop target — drag a tab onto a folder to move it inside
@@ -193,8 +238,7 @@ extension SephrFolderCell {
         defer { layer?.backgroundColor = NSColor.clear.cgColor }
         guard let id = SephrTabPasteboard.tabID(
             from: sender.draggingPasteboard),
-              let tab = SephrTabModel.shared.allTabs
-                .first(where: { $0.id == id })
+              let tab = SephrTabModel.shared.tab(withID: id)
         else { return false }
         SephrTabModel.shared.moveTab(tab, toFolder: folder)
         return true

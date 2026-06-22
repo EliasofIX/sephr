@@ -73,7 +73,7 @@ final class SephrCreateSpaceView: NSView, NSTextFieldDelegate {
         nameField.target = self
         nameField.action = #selector(createTapped)
         nameField.wantsLayer = true
-        nameField.layer?.cornerRadius = 8
+        nameField.layer?.cornerRadius = DC.Radius.standard
 
         let nameRow = NSStackView(views: [symbolButton, nameField])
         nameRow.orientation = .horizontal
@@ -229,7 +229,7 @@ final class SephrSymbolWell: NSView {
         super.init(frame: frame)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = DC.Radius.standard
         imageView.symbolConfiguration = .init(pointSize: 14, weight: .medium)
         imageView.contentTintColor = NSColor.labelColor
         imageView.translatesAutoresizingMaskIntoConstraints = false

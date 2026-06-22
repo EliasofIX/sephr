@@ -22,12 +22,15 @@ final class SephrSpaceHeader: NSView {
         wantsLayer = true
 
         icon.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
-        icon.contentTintColor = NSColor.labelColor.withAlphaComponent(0.9)
+        // Dynamic `labelColor` directly — `.withAlphaComponent` flattens a
+        // dynamic system color against the light base appearance, which made
+        // the header glyph + title read near-black on the dark glass chrome.
+        icon.contentTintColor = NSColor.labelColor
         icon.translatesAutoresizingMaskIntoConstraints = false
         addSubview(icon)
 
         label.font = .systemFont(ofSize: 13, weight: .semibold)
-        label.textColor = NSColor.labelColor.withAlphaComponent(0.9)
+        label.textColor = NSColor.labelColor
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
@@ -40,7 +43,10 @@ final class SephrSpaceHeader: NSView {
 
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 28),
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor),
+            // Align with folder icons and tab favicons in the list below —
+            // all sit on the same 10pt sidebar rail, then inset their glyphs
+            // 8pt inside the cell.
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 18),
             icon.heightAnchor.constraint(equalToConstant: 18),

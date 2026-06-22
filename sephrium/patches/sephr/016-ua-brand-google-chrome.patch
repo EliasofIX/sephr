@@ -1,0 +1,53 @@
+# Sephr — 016-ua-brand-google-chrome
+#
+# Make the User-Agent Client Hints brand list advertise "Google Chrome" so
+# Chrome-gated sites — most importantly the new Chrome Web Store at
+# chromewebstore.google.com — treat Sephr as Chrome.
+#
+# Background. The UA *string* already reports `Chrome/<version>` (Chromium's
+# default product token; Sephr does not inject its own token there). But the
+# modern Web Store no longer trusts the UA string: it inspects
+# `navigator.userAgentData.brands` (UA Client Hints) and only enables the
+# "Add to Chrome" install button when that list contains a brand named exactly
+# "Google Chrome". A stock Chromium-branded build — which Sephr is
+# (is_chrome_branded=false → BUILDFLAG(CHROMIUM_BRANDING)=1) — emits only
+# {GREASE, "Chromium"} and never "Google Chrome", so the store shows
+# "Switch to Chrome to install extensions and themes" and greys out the button.
+#
+# In components/embedder_support/user_agent_utils.cc, GetUserAgentBrandList()
+# fills the optional third brand from version_info::GetProductName() ONLY under
+# `#if !BUILDFLAG(CHROMIUM_BRANDING)` — i.e. only for Google-Chrome-branded
+# builds. On our Chromium-branded build that block is compiled out, leaving the
+# brand unset. This patch adds the `#else` arm to inject the literal
+# "Google Chrome", producing {GREASE, "Chromium", "Google Chrome"} — byte-for-
+# byte what a real Chrome build advertises. GenerateBrandVersionList() appends
+# it alongside the always-present "Chromium" entry and GREASE, then shuffles.
+#
+# The inline-install path itself is intact: ungoogled's disable-webstore-urls
+# patch only severs auto-update + from-store verification, not webstorePrivate
+# or webstore_installer's download URL, so once the gate passes the install
+# completes via the normal flow.
+#
+# Note: this makes Sephr identify as Google Chrome via UA-CH to *every* site,
+# consistent with the existing UA-string posture (max web compatibility).
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -165,6 +165,18 @@
+   std::optional<std::string> brand;
+ #if !BUILDFLAG(CHROMIUM_BRANDING)
+   brand = version_info::GetProductName();
++#else
++  // Sephr: emit the "Google Chrome" UA Client Hints brand on our (Chromium-
++  // branded) build. The UA string already reports "Chrome/<version>", but a
++  // stock Chromium brand list is only {GREASE, "Chromium"} — it never contains
++  // "Google Chrome". The new Chrome Web Store (chromewebstore.google.com)
++  // gates extension installs on navigator.userAgentData.brands containing
++  // "Google Chrome"; without it the store shows "Switch to Chrome to install
++  // extensions and themes" and disables "Add to Chrome". Injecting the brand
++  // here makes navigator.userAgentData report {GREASE, "Chromium",
++  // "Google Chrome"} — identical to a real Chrome build — so Chrome-gated
++  // sites treat us as Chrome.
++  brand = "Google Chrome";
+ #endif
+ 
+   std::string brand_version =

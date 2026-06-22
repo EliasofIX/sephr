@@ -15,7 +15,7 @@ final class SephrDownloadsButton: NSView {
     private var hovered = false
     private var pressed = false
 
-    static let pointSize: CGFloat = 26
+    static let pointSize: CGFloat = SephrSidebarFooterMetrics.controlSize
     private static let ringInset: CGFloat = 1.5
     private static let ringLineWidth: CGFloat = 2
 
@@ -23,20 +23,27 @@ final class SephrDownloadsButton: NSView {
         super.init(frame: frame)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = DC.Radius.standard
         toolTip = "Downloads"
 
         icon.image = NSImage(systemSymbolName: "arrow.down.circle",
                               accessibilityDescription: "Downloads")
-        icon.symbolConfiguration = .init(pointSize: 14, weight: .medium)
+        icon.symbolConfiguration = .init(
+            pointSize: SephrSidebarFooterMetrics.symbolPointSize,
+            weight: .medium)
         icon.contentTintColor = NSColor.secondaryLabelColor
+        icon.imageScaling = .scaleProportionallyUpOrDown
         icon.translatesAutoresizingMaskIntoConstraints = false
         addSubview(icon)
         NSLayoutConstraint.activate([
             icon.centerXAnchor.constraint(equalTo: centerXAnchor),
-            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 14),
-            icon.heightAnchor.constraint(equalToConstant: 14),
+            icon.centerYAnchor.constraint(
+                equalTo: centerYAnchor,
+                constant: SephrSidebarFooterMetrics.iconCenterYOffset),
+            icon.widthAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.iconBoxSize),
+            icon.heightAnchor.constraint(
+                equalToConstant: SephrSidebarFooterMetrics.iconBoxSize),
         ])
 
         // Track ring (faint) sits behind progress ring (accent). Both
@@ -91,11 +98,18 @@ final class SephrDownloadsButton: NSView {
     private func subscribe() {
         let obs = SephrDownloadsObserver.shared
 
+        // removeDuplicates: Chromium re-emits the same progress value for
+        // every byte-progress tick the throttler can't fully collapse;
+        // each pass-through hits CATransaction + a CAShapeLayer .strokeEnd
+        // animation for unchanged values. Same for hasActive — it flips
+        // on/off, no point reanimating opacity on no-change.
         obs.$activeProgress
+            .removeDuplicates()
             .sink { [weak self] p in self?.setProgress(CGFloat(p)) }
             .store(in: &cancellables)
 
         obs.$hasActive
+            .removeDuplicates()
             .sink { [weak self] active in self?.setActive(active) }
             .store(in: &cancellables)
 

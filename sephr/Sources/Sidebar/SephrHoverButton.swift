@@ -26,7 +26,7 @@ class SephrHoverButton: NSButton {
         bezelStyle = .regularSquare
         imagePosition = .imageOnly
         wantsLayer = true
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = DC.Radius.standard
         refreshBackground()
     }
     required init?(coder: NSCoder) { fatalError() }

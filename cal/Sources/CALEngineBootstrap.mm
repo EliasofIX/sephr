@@ -119,6 +119,85 @@ static void CALInvokeOpenExternalURL(void* ctx, const char* url) {
 
 static BOOL kInitialized = NO;
 
+// `~/Library/Application Support/Sephr/Profiles` — the Chromium user-data
+// dir we pin via --user-data-dir. Shared by CALDefaultSwitches (the switch)
+// and CALDisableProfilePicker (the Local State path).
+static NSString* CALUserDataDir(void) {
+    NSArray<NSString*>* roots = NSSearchPathForDirectoriesInDomains(
+        NSApplicationSupportDirectory, NSUserDomainMask, YES);
+    NSString* support = roots.firstObject;
+    if (!support.length) {
+        NSString* home = NSHomeDirectory() ?: @"/tmp";
+        support = [home stringByAppendingPathComponent:
+                            @"Library/Application Support"];
+    }
+    return [support stringByAppendingPathComponent:@"Sephr/Profiles"];
+}
+
+// Suppress Chromium's "Who's using Chromium?" multi-profile picker.
+//
+// Sephr assigns each isolated Space its own Chromium profile (see
+// SephrSpace.profileID → "space-<UUID>"). The moment a second profile is
+// registered in Local State, Chromium's ProfilePicker::GetStartupMode()
+// returns kProfilePicker and the chooser pops up at launch. Profiles are
+// an implementation detail of Spaces here, never a user-facing concept, so
+// Sephr never wants that screen.
+//
+// We disable it by writing profile.picker_availability_on_startup = 1
+// (ProfilePicker::AvailabilityOnStartup::kDisabled) into Local State BEFORE
+// ChromeMain loads it. kDisabled short-circuits GetStartupMode() to
+// kBrowserWindow at its very first check, regardless of how many profiles
+// exist — so isolated-profile Spaces keep working. (show_picker_on_startup
+// is set false too for belt-and-suspenders / clarity when inspecting the
+// file.) Neither pref is a hash-tracked pref, so an external write is
+// honoured rather than reset.
+//
+// Browser process only — helpers must not race on the shared Local State.
+static void CALDisableProfilePicker(NSString* userDataDir) {
+    if (!userDataDir.length) return;
+    NSFileManager* fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:userDataDir withIntermediateDirectories:YES
+                   attributes:nil error:nil];
+    NSString* localState =
+        [userDataDir stringByAppendingPathComponent:@"Local State"];
+
+    NSMutableDictionary* root = nil;
+    if ([fm fileExistsAtPath:localState]) {
+        NSData* data = [NSData dataWithContentsOfFile:localState];
+        id parsed = data ? [NSJSONSerialization JSONObjectWithData:data
+                                                           options:0
+                                                             error:nil]
+                          : nil;
+        if ([parsed isKindOfClass:[NSDictionary class]]) {
+            root = [parsed mutableCopy];
+        }
+    }
+    if (!root) root = [NSMutableDictionary dictionary];
+
+    id profileObj = root[@"profile"];
+    NSMutableDictionary* profile =
+        [profileObj isKindOfClass:[NSDictionary class]]
+            ? [profileObj mutableCopy]
+            : [NSMutableDictionary dictionary];
+
+    // Idempotent: nothing to do if both prefs are already where we want them.
+    if ([profile[@"picker_availability_on_startup"] isEqual:@1] &&
+        [profile[@"show_picker_on_startup"] isEqual:@NO]) {
+        return;
+    }
+
+    profile[@"picker_availability_on_startup"] = @1;  // kDisabled
+    profile[@"show_picker_on_startup"] = @NO;
+    root[@"profile"] = profile;
+
+    NSData* out = [NSJSONSerialization dataWithJSONObject:root
+                                                  options:0
+                                                    error:nil];
+    if (out) {
+        [out writeToFile:localState atomically:YES];
+    }
+}
+
 // Default switches Sephr always wants in the browser process. Critical
 // ones today:
 //
@@ -137,18 +216,10 @@ static BOOL kInitialized = NO;
 //     Pin the profile root somewhere we control. Without this Chromium
 //     uses "~/Library/Application Support/Chromium" by default.
 static NSArray<NSString*>* CALDefaultSwitches(void) {
-    NSArray<NSString*>* roots = NSSearchPathForDirectoriesInDomains(
-        NSApplicationSupportDirectory, NSUserDomainMask, YES);
-    NSString* support = roots.firstObject;
-    if (!support.length) {
-        NSString* home = NSHomeDirectory() ?: @"/tmp";
-        support = [home stringByAppendingPathComponent:
-                            @"Library/Application Support"];
-    }
-    NSString* userDataDir = [support stringByAppendingPathComponent:
-                             @"Sephr/Profiles"];
-    NSString* crashDir = [support stringByAppendingPathComponent:
-                          @"Sephr/Crashes"];
+    NSString* userDataDir = CALUserDataDir();
+    // crashDir is a sibling of Profiles under .../Sephr.
+    NSString* crashDir = [[userDataDir stringByDeletingLastPathComponent]
+                          stringByAppendingPathComponent:@"Crashes"];
     NSFileManager* fm = [NSFileManager defaultManager];
     [fm createDirectoryAtPath:userDataDir withIntermediateDirectories:YES
                    attributes:nil error:nil];
@@ -231,6 +302,13 @@ static NSArray<NSString*>* CALDefaultSwitches(void) {
     NSArray<NSString*>* finalArgs = isHelper
         ? processArgs
         : [processArgs arrayByAddingObjectsFromArray:defaults];
+
+    // Browser process only: keep Chromium's multi-profile picker from
+    // appearing at launch. Must run before SephriumInitialize → ChromeMain
+    // reads Local State.
+    if (!isHelper) {
+        CALDisableProfilePicker(CALUserDataDir());
+    }
 
     // strdup(NULL) is undefined behaviour. -UTF8String can return NULL for
     // a string that does not round-trip through UTF-8 — rare for argv but

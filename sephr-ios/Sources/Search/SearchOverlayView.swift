@@ -34,7 +34,7 @@ struct SearchOverlayView: View {
                         .dcLabel()
                         .padding(.horizontal, DC.Space.m)
                         .padding(.vertical, 6)
-                        .dcGlass(cornerRadius: 12)
+                        .dcGlass()
                 }
 
                 if query.isEmpty {
@@ -112,7 +112,7 @@ struct SearchOverlayView: View {
         }
         .padding(.horizontal, DC.Space.m)
         .frame(minHeight: 56)
-        .dcGlass(cornerRadius: 28)
+        .dcGlass()
     }
 
     // MARK: — Favorites
@@ -129,7 +129,7 @@ struct SearchOverlayView: View {
                                 .font(.system(size: 20, weight: .semibold))
                                 .foregroundStyle(DC.Ink.ink)
                                 .frame(width: 52, height: 52)
-                                .dcSurface(cornerRadius: 16)
+                                .dcSurface()
                             Text(favorite.label)
                                 .font(DC.TypeScale.caption)
                                 .foregroundStyle(DC.Ink.ink3)
@@ -151,7 +151,7 @@ struct SearchOverlayView: View {
         }
         .padding(.vertical, DC.Space.m)
         .padding(.horizontal, DC.Space.m)
-        .dcGlass(cornerRadius: 24)
+        .dcGlass()
     }
 
     // MARK: — Suggestions
@@ -159,42 +159,63 @@ struct SearchOverlayView: View {
     private var suggestionList: some View {
         VStack(spacing: 0) {
             ForEach(suggestions) { visit in
-                Button {
-                    submit(visit.url.absoluteString)
-                } label: {
-                    HStack(spacing: DC.Space.m) {
-                        Image(systemName: "clock")
-                            .font(.system(size: 14))
-                            .foregroundStyle(DC.Ink.ink4)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(visit.title.isEmpty
-                                 ? visit.url.absoluteString : visit.title)
-                                .font(DC.TypeScale.callout)
-                                .foregroundStyle(DC.Ink.ink)
-                                .lineLimit(1)
-                            Text(visit.url.host() ?? "")
-                                .font(DC.TypeScale.caption)
-                                .foregroundStyle(DC.Ink.ink3)
-                                .lineLimit(1)
-                        }
-                        Spacer()
-                        Image(systemName: "arrow.up.left")
-                            .font(.system(size: 12))
-                            .foregroundStyle(DC.Ink.ink4)
-                    }
-                    .padding(.horizontal, DC.Space.l)
-                    .frame(minHeight: 52)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                suggestionRow(visit: visit)
                 if visit.id != suggestions.last?.id {
                     Divider().overlay(DC.Ink.hairline)
                         .padding(.leading, DC.Space.huge)
                 }
             }
 
-            // The query itself, as a search row.
+            // The query itself, as a search row. Same layout pattern —
+            // tap the body to do a normal search, tap SuperBrowse to
+            // run the on-device agentic answer instead.
             Divider().overlay(DC.Ink.hairline)
+            queryRow
+        }
+        .dcGlass()
+    }
+
+    /// One history-suggestion row. The row body submits as a normal
+    /// navigation; the trailing SuperBrowse pill runs the on-device
+    /// agent against the suggestion text instead. We split the tap
+    /// targets so the pill never steals the row tap and vice-versa.
+    private func suggestionRow(visit: HistoryStore.Visit) -> some View {
+        HStack(spacing: DC.Space.m) {
+            Button {
+                submit(visit.url.absoluteString)
+            } label: {
+                HStack(spacing: DC.Space.m) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 14))
+                        .foregroundStyle(DC.Ink.ink4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(visit.title.isEmpty
+                             ? visit.url.absoluteString : visit.title)
+                            .font(DC.TypeScale.callout)
+                            .foregroundStyle(DC.Ink.ink)
+                            .lineLimit(1)
+                        Text(visit.url.host() ?? "")
+                            .font(DC.TypeScale.caption)
+                            .foregroundStyle(DC.Ink.ink3)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: DC.Space.s)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            SuperBrowsePill {
+                superBrowse(visit.title.isEmpty
+                            ? visit.url.absoluteString : visit.title)
+            }
+        }
+        .padding(.horizontal, DC.Space.l)
+        .frame(minHeight: 56)
+    }
+
+    /// The "Search for X" + SuperBrowse pair shown beneath suggestions.
+    private var queryRow: some View {
+        HStack(spacing: DC.Space.m) {
             Button {
                 submit(query)
             } label: {
@@ -206,15 +227,15 @@ struct SearchOverlayView: View {
                         .font(DC.TypeScale.callout)
                         .foregroundStyle(DC.Ink.ink)
                         .lineLimit(1)
-                    Spacer()
+                    Spacer(minLength: DC.Space.s)
                 }
-                .padding(.horizontal, DC.Space.l)
-                .frame(minHeight: 52)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            SuperBrowsePill { superBrowse(query) }
         }
-        .dcGlass(cornerRadius: 24)
+        .padding(.horizontal, DC.Space.l)
+        .frame(minHeight: 56)
     }
 
     // MARK: — Actions
@@ -230,6 +251,16 @@ struct SearchOverlayView: View {
         default:
             engine.openInNewTab(url, incognito: incognito)
         }
+        dismiss()
+    }
+
+    /// SuperBrowse the given query — dismiss the search takeover, then
+    /// hand off to the engine which mounts the hero/result over the app.
+    private func superBrowse(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        engine.startSuperBrowse(query: trimmed)
         dismiss()
     }
 

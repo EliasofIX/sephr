@@ -30,6 +30,12 @@ enum SephrPreferences {
     @UserDefault(key: "tabs.suspendAfterSeconds", defaultValue: 300)
     static var suspendAfterSeconds: Int
 
+    /// Minutes a hidden tab keeps its live renderer before sleeping
+    /// (WebContents destroyed; tab re-navigates on activation).
+    /// 0 disables tab sleeping entirely.
+    @UserDefault(key: "tabs.sleepAfterMinutes", defaultValue: 30)
+    static var sleepAfterMinutes: Int
+
     @UserDefault(key: "privacy.blockAds", defaultValue: true)
     static var blockAds: Bool
 
@@ -73,17 +79,21 @@ enum SephrPreferences {
     @UserDefault(key: "peek.archiveHours", defaultValue: 6)
     static var peekArchiveHours: Int
 
+    /// Show a live preview popover when hovering a sidebar tab.
+    @UserDefault(key: "peek.onSidebarHover", defaultValue: true)
+    static var peekOnSidebarHover: Bool
+
     // MARK: — Profile card (Settings ▸ Profile).
 
     /// User-chosen display name shown on the profile card. Empty falls
-    /// back to the macOS full user name at render time.
+    /// back to a suggested name at render time.
     @UserDefault(key: "profile.displayName", defaultValue: "")
     static var profileDisplayName: String
 
-    /// Seed for the generated gradient avatar. Indexes the palette set
-    /// in `DCGradientAvatar` — a given seed always renders the same swatch.
-    @UserDefault(key: "profile.avatarSeed", defaultValue: 0)
-    static var profileAvatarSeed: Int
+    /// The profile "character": an emoji / Unicode glyph, or an SF Symbol
+    /// name prefixed `sf:` (see `SephrGlyph`). Empty shows a placeholder.
+    @UserDefault(key: "profile.character", defaultValue: "")
+    static var profileCharacter: String
 
     // MARK: — App icon (Settings ▸ Icon). Only index 0 ships today.
 

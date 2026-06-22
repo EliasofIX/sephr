@@ -29,7 +29,7 @@ final class SephrSpaceColumnRowView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = DC.Radius.standard
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyUpOrDown
@@ -155,7 +155,7 @@ final class SephrSpaceColumnRowView: NSView {
         defer { layer?.backgroundColor = NSColor.clear.cgColor }
         guard case .folder(let folder) = content,
               let id = SephrTabPasteboard.tabID(from: sender.draggingPasteboard),
-              let tab = SephrTabModel.shared.allTabs.first(where: { $0.id == id })
+              let tab = SephrTabModel.shared.tab(withID: id)
         else { return false }
         // Carry the tab into this folder's space first if it came from a
         // different column, then drop it into the folder.

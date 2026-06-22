@@ -45,6 +45,12 @@ enum DC {
                                         dark:  NSColor(white: 1, alpha: 0.06))
     }
 
+    // MARK: — Shape
+    enum Radius {
+        /// Standard corner radius for bars, panels, rows, and controls.
+        static let standard: CGFloat = 8
+    }
+
     // MARK: — Spacing (4pt base)
     enum Space {
         static let xs:     CGFloat = 4
@@ -112,9 +118,9 @@ extension View {
     }
 
     /// Monochrome glass surface — ultra-thin material clipped to a
-    /// continuous 20pt corner with a hairline border. The Apple
-    /// specular cue without any hue.
-    func dcGlass(cornerRadius: CGFloat = 20) -> some View {
+    /// continuous corner with a hairline border. The Apple specular cue
+    /// without any hue.
+    func dcGlass(cornerRadius: CGFloat = DC.Radius.standard) -> some View {
         self.background(
             .ultraThinMaterial,
             in: RoundedRectangle(cornerRadius: cornerRadius,
@@ -139,12 +145,13 @@ struct DCToggleStyle: ToggleStyle {
                 .foregroundStyle(DC.Ink.ink)
             Spacer(minLength: DC.Space.s)
             ZStack(alignment: configuration.isOn ? .trailing : .leading) {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                 style: .continuous)
                     .fill(configuration.isOn
                           ? AnyShapeStyle(DC.Ink.ink)
                           : AnyShapeStyle(DC.Ink.surface))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 14,
+                        RoundedRectangle(cornerRadius: DC.Radius.standard,
                                           style: .continuous)
                             .strokeBorder(DC.Ink.hairline,
                                           lineWidth: DC.hairlineWidth))
@@ -179,10 +186,11 @@ struct DCTextFieldStyle: TextFieldStyle {
             .padding(.vertical, DC.Space.s)
             .frame(minHeight: 32)
             .background(DC.Ink.surface,
-                        in: RoundedRectangle(cornerRadius: 10,
+                        in: RoundedRectangle(cornerRadius: DC.Radius.standard,
                                               style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                 style: .continuous)
                     .strokeBorder(DC.Ink.hairline,
                                   lineWidth: DC.hairlineWidth))
     }
@@ -199,9 +207,10 @@ struct DCPrimaryButtonStyle: ButtonStyle {
             .padding(.horizontal, DC.Space.xl)
             .padding(.vertical, DC.Space.m)
             .background(
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                 style: .continuous)
                     .fill(DC.Ink.ink)
-                    // Hover lifts the pill subtly; press settles it. The
+                    // Hover lifts the bar subtly; press settles it. The
                     // two opacities never collide because isPressed wins.
                     .opacity(configuration.isPressed ? 0.82
                              : (hovering ? 0.94 : 1)))
@@ -223,10 +232,12 @@ struct DCSecondaryButtonStyle: ButtonStyle {
             .padding(.horizontal, DC.Space.l)
             .padding(.vertical, DC.Space.s)
             .background(
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                 style: .continuous)
                     .fill(hovering ? DC.Ink.hairline : DC.Ink.surface)
                     .overlay(
-                        Capsule(style: .continuous)
+                        RoundedRectangle(cornerRadius: DC.Radius.standard,
+                                          style: .continuous)
                             .strokeBorder(DC.Ink.hairline,
                                           lineWidth: DC.hairlineWidth))
                     .opacity(configuration.isPressed ? 0.72 : 1))
