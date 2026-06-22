@@ -3,8 +3,8 @@ import AppKit
 import CAL
 
 /// Single source of truth for the installed-extension list, mirroring
-/// `SephrDownloadsObserver`: owns the `CALExtensions.onExtensionsChanged`
-/// subscription for the active profile and re-publishes it for SwiftUI.
+/// `SephrDownloadsObserver`: registers a `CALExtensions` change observer for
+/// the active profile and re-publishes the list for SwiftUI.
 /// Re-subscribes on space change so a profile switch reflects immediately.
 /// Driven by the live `SephriumExtensions*` bridge into Chromium's
 /// ExtensionRegistry / ExtensionRegistrar.
@@ -16,12 +16,20 @@ final class SephrExtensionsObserver: ObservableObject {
     @Published private(set) var extensions: [CALExtension] = []
 
     private var currentProfileID: String?
+    private var observedService: CALExtensions?
+    private var observerToken: Any?
 
     private init() {
         attachToCurrentProfile()
         NotificationCenter.default.addObserver(
             self, selector: #selector(onSpaceChanged),
             name: .sephrSpaceChanged, object: nil)
+        // No didBecomeActive belt-and-suspenders: the live change observer
+        // registered via `addChangeObserver` already covers extension
+        // installs from a tab, even when the app is backgrounded — the
+        // observer fires on the next runloop turn after the extension
+        // registrar updates. Re-reading every activation just hammered
+        // the CAL bridge on every Cmd-Tab into the app.
     }
 
     @objc private func onSpaceChanged() { attachToCurrentProfile() }
@@ -34,8 +42,13 @@ final class SephrExtensionsObserver: ObservableObject {
         let pid = SephrSpaceManager.shared.currentSpace.profileID
         guard pid != currentProfileID else { return }
         currentProfileID = pid
+        // Drop the previous profile's observer before re-registering.
+        if let observedService, let observerToken {
+            observedService.removeChangeObserver(observerToken)
+        }
         let svc = CALExtensions.sharedInstance(forProfile: pid)
-        svc.onExtensionsChanged = { [weak self] in
+        observedService = svc
+        observerToken = svc.addChangeObserver { [weak self] in
             Task { @MainActor [weak self] in self?.reload() }
         }
         reload()
@@ -47,14 +60,16 @@ final class SephrExtensionsObserver: ObservableObject {
     }
 
     func setEnabled(_ id: String, _ on: Bool) {
+        // The bridge's live change observer (set up in attachToCurrentProfile)
+        // already pushes a reload() on the next runloop turn after this lands —
+        // the synchronous reload was hitting CAL twice per toggle.
         CALExtensions.sharedInstance(forProfile: profileID)
             .setEnabled(id, enabled: on)
-        reload()
     }
 
     func uninstall(_ id: String) {
+        // Same story — observer fires reload() after the uninstall completes.
         CALExtensions.sharedInstance(forProfile: profileID).uninstall(id)
-        reload()
     }
 }
 
@@ -94,7 +109,9 @@ struct ExtensionsPane: View {
                 .buttonStyle(DCPrimaryButtonStyle())
             }
         }
-        .onAppear { obs.reload() }
+        // No .onAppear reload — the SephrExtensionsObserver singleton's live
+        // CAL change observer + space-change re-attach are already the
+        // source of truth. A pane open used to fire a third reload() on top.
     }
 
     private var emptyState: some View {
@@ -125,6 +142,9 @@ private struct ExtensionRow: View {
     let observer: SephrExtensionsObserver
 
     @State private var enabled: Bool
+    @State private var rowHovering = false
+    @State private var menuHovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(ext: CALExtension, observer: SephrExtensionsObserver) {
         self.ext = ext
@@ -145,6 +165,9 @@ private struct ExtensionRow: View {
                 }
             }
             .frame(width: 30, height: 30)
+            // Disabled extensions read as dimmed so the row's status is
+            // legible at a glance — the toggle was the only existing cue.
+            .opacity(enabled ? 1 : 0.5)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(ext.name)
@@ -155,6 +178,7 @@ private struct ExtensionRow: View {
                     .foregroundStyle(DC.Ink.ink3)
                     .monospacedDigit()
             }
+            .opacity(enabled ? 1 : 0.55)
 
             Spacer(minLength: DC.Space.s)
 
@@ -172,15 +196,37 @@ private struct ExtensionRow: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(DC.Ink.ink2)
+                    .foregroundStyle(menuHovering ? DC.Ink.ink : DC.Ink.ink2)
                     .frame(width: 28, height: 28)
+                    .background(
+                        Circle()
+                            .fill(menuHovering
+                                  ? DC.Ink.hairline : Color.clear))
+                    .scaleEffect(menuHovering ? 1.06 : 1)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .onHover { menuHovering = $0 }
+            .animation(reduceMotion ? nil : DC.Motion.hover,
+                       value: menuHovering)
         }
         .padding(DC.Space.l)
         .dcGlass()
+        // Subtle hover lift on the whole row so the active extension
+        // separates from siblings. Stroke brightens on hover too,
+        // riding on top of the dcGlass hairline.
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(DC.Ink.hairline,
+                              lineWidth: rowHovering
+                                ? DC.hairlineWidth * 2
+                                : 0)
+                .opacity(rowHovering ? 1 : 0)
+                .allowsHitTesting(false))
+        .scaleEffect(rowHovering ? 1.004 : 1)
+        .onHover { rowHovering = $0 }
+        .animation(reduceMotion ? nil : DC.Motion.hover, value: rowHovering)
     }
 }
