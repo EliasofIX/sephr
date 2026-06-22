@@ -47,16 +47,24 @@ enum SephrCommandBar {
         panel.contentView = NSHostingView(rootView: view)
 
         // Spotlight-style placement: horizontally centred, anchored in the
-        // upper third of the active screen rather than dead-centre.
-        if let screen = wc?.window?.screen ?? NSScreen.main {
-            let vf = screen.visibleFrame
-            let size = panel.frame.size
-            let x = vf.midX - size.width / 2
-            let y = vf.maxY - size.height - vf.height * 0.10
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
-        } else {
-            panel.center()
-        }
+        // upper third of the screen the browser window lives on. The screen is
+        // resolved deterministically and the final origin is clamped inside the
+        // visible frame, so the palette can never drift off-centre or float
+        // above the top edge of the screen ("above the window").
+        let vf = Self.targetScreen(for: wc).visibleFrame
+        let size = panel.frame.size
+        // Horizontally centred within the visible frame.
+        var x = vf.minX + (vf.width - size.width) / 2
+        // The pill is top-anchored inside the panel, so anchoring the panel's
+        // TOP edge ~12% down from the top lands the pill in the upper third.
+        var y = vf.maxY - size.height - vf.height * 0.12
+        // Clamp so the panel always stays within the visible frame: its top can
+        // never rise above the screen and its body never runs off a side. When
+        // the panel is taller than the screen the upper bound wins, keeping the
+        // pill pinned at the top rather than pushed off it.
+        x = min(max(x, vf.minX), max(vf.minX, vf.maxX - size.width))
+        y = min(max(y, vf.minY), vf.maxY - size.height)
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
         // Activate the app + force ourselves to key so the TextField can
         // take input even when Chromium's hidden Browser is otherwise
         // installed as a key candidate.
@@ -70,6 +78,22 @@ enum SephrCommandBar {
         panel?.orderOut(nil)
         panel = nil
     }
+
+    /// Resolve the screen the palette should appear on, deterministically.
+    /// `NSWindow.screen` returns nil while a window is offscreen/mid-move and
+    /// `NSScreen.main` follows keyboard focus (which the palette is about to
+    /// steal), so prefer the screen physically containing the host window's
+    /// centre. Falls back to the window's own screen, then the menu-bar screen.
+    private static func targetScreen(for wc: SephrWindowController?) -> NSScreen {
+        if let win = wc?.window {
+            let centre = NSPoint(x: win.frame.midX, y: win.frame.midY)
+            if let s = NSScreen.screens.first(where: { $0.frame.contains(centre) }) {
+                return s
+            }
+            if let s = win.screen { return s }
+        }
+        return NSScreen.main ?? NSScreen.screens.first!
+    }
 }
 
 struct SephrCommandBarView: View {
@@ -77,6 +101,7 @@ struct SephrCommandBarView: View {
     let onDismiss: () -> Void
     @State private var query = ""
     @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Results render only once the user has typed something — an empty
     /// query leaves just the bare search pill (Spotlight behaviour).
@@ -84,6 +109,10 @@ struct SephrCommandBarView: View {
         !query.trimmingCharacters(in: .whitespaces).isEmpty
             && !viewModel.results.isEmpty
     }
+
+    /// Pill corner radius — matched by the focus-ring overlay so the
+    /// glow stays seated on the glass edge.
+    private static let pillCorner: CGFloat = 18
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -93,41 +122,63 @@ struct SephrCommandBarView: View {
                 .onTapGesture { onDismiss() }
 
             VStack(spacing: 0) {
-                HStack(spacing: 12) {
+                HStack(spacing: DC.Space.m) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                    TextField("Search or enter URL...", text: $query)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(focused ? DC.Ink.ink2 : DC.Ink.ink3)
+                    TextField("Search or enter URL…", text: $query)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 17))
+                        .font(DC.TypeScale.headline)
+                        .foregroundStyle(DC.Ink.ink)
                         .focused($focused)
                         .onChange(of: query) { _, new in viewModel.search(new) }
                         .onSubmit { viewModel.activateFirst(); onDismiss() }
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 15)
+                .padding(.horizontal, DC.Space.l)
+                .padding(.vertical, DC.Space.m + 3)
 
                 if showResults {
                     Divider().opacity(0.6)
                     ScrollView {
                         LazyVStack(spacing: 2) {
-                            ForEach(viewModel.results) { result in
-                                CommandResultRow(result: result) {
+                            // enumerated() so each row knows its position
+                            // in the visible list and can stagger its own
+                            // fade-in — capped at six steps so the tail
+                            // of a long list doesn't drift in late.
+                            ForEach(
+                                Array(viewModel.results.enumerated()),
+                                id: \.element.id
+                            ) { idx, result in
+                                CommandResultRow(result: result,
+                                                 index: idx) {
                                     viewModel.activate(result)
                                     onDismiss()
                                 }
                             }
                         }
-                        .padding(8)
+                        .padding(DC.Space.s)
                     }
                     .frame(maxHeight: 360)
                 }
             }
             .frame(width: 640)
             .fixedSize(horizontal: false, vertical: true)
-            .modifier(LiquidGlassPanel())
-            .padding(.top, 24)
-            .animation(.easeOut(duration: 0.12), value: showResults)
+            .modifier(LiquidGlassPanel(cornerRadius: Self.pillCorner))
+            // Focus ring — a 1pt hairline stroke that fades in only when
+            // the field has keyboard focus. Animates with the same hover
+            // curve so it crossfades softly instead of snapping in.
+            .overlay(
+                RoundedRectangle(cornerRadius: Self.pillCorner,
+                                 style: .continuous)
+                    .strokeBorder(DC.Ink.ink2.opacity(0.35),
+                                  lineWidth: 1)
+                    .opacity(focused ? 1 : 0)
+                    .allowsHitTesting(false)
+                    .animation(reduceMotion ? nil : DC.Motion.hover,
+                               value: focused))
+            .padding(.top, DC.Space.xl)
+            .animation(reduceMotion ? nil : DC.Motion.easeOutFast,
+                       value: showResults)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear { focused = true }
@@ -144,8 +195,11 @@ struct SephrCommandBarView: View {
 /// glass renders with Apple's clean, subtle floating edge and no artifact.
 /// Falls back to `.ultraThinMaterial` only on pre-26 systems that lack glass.
 struct LiquidGlassPanel: ViewModifier {
+    var cornerRadius: CGFloat = 18
+
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius,
+                                     style: .continuous)
         if #available(macOS 26, *) {
             content.glassEffect(.regular, in: shape)
         } else {
@@ -159,41 +213,82 @@ struct LiquidGlassPanel: ViewModifier {
 
 struct CommandResultRow: View {
     let result: SephrSearchResult
+    var index: Int = 0
     let action: () -> Void
+
+    @State private var hovering = false
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Stagger the first six rows in by 22 ms each so the list appears
+    /// as a soft cascade rather than a slab. Past six, every row uses
+    /// the cap so a long list tail doesn't drift in late.
+    private var staggerDelay: Double {
+        reduceMotion ? 0 : Double(min(index, 6)) * 0.022
+    }
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: DC.Space.m) {
                 if let fav = result.favicon {
                     Image(nsImage: fav).resizable()
                         .frame(width: 16, height: 16)
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                 } else {
                     Image(systemName: result.systemIcon)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(hovering ? DC.Ink.ink : DC.Ink.ink2)
                         .frame(width: 16, height: 16)
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(result.title)
                         .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(DC.Ink.ink)
+                        .lineLimit(1)
                     if !result.subtitle.isEmpty {
                         Text(result.subtitle)
                             .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DC.Ink.ink3)
                             .lineLimit(1)
                     }
                 }
                 Spacer()
                 Text(result.typeLabel)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 10, weight: .medium))
+                    .tracking(0.4)
+                    .textCase(.uppercase)
+                    .foregroundStyle(hovering ? DC.Ink.ink2 : DC.Ink.ink4)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.horizontal, DC.Space.m)
+            .padding(.vertical, DC.Space.s)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(Color.white.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hovering
+                      ? DC.Ink.hairline
+                      : DC.Ink.surface.opacity(0.5)))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // Slight lift on hover so the active row separates from siblings
+        // without changing the row's hit-target box.
+        .scaleEffect(hovering ? 1.008 : 1)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : 4)
+        .animation(reduceMotion ? nil : DC.Motion.hover, value: hovering)
+        .onHover { hovering = $0 }
+        .onAppear {
+            // Stagger only the entrance; subsequent recomputes (typing,
+            // reordering) skip the delay because `appeared` stays true
+            // once the row first lands.
+            guard !appeared else { return }
+            if reduceMotion {
+                appeared = true
+                return
+            }
+            withAnimation(DC.Motion.easeOutFast.delay(staggerDelay)) {
+                appeared = true
+            }
+        }
     }
 }
