@@ -5,6 +5,16 @@ options:
     iOS: "26.0"
   createIntermediateGroups: true
 
+schemes:
+  Sephr:
+    build:
+      targets:
+        Sephr: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
 # Liquid AI's unified LEAP SDK — drives the on-device LFM2-VL-450M runtime
 # behind SuperBrowse + Summarize. ModelManager.swift conditionally compiles
 # against it (#if canImport(LeapSDK)) so the build still produces a usable
@@ -77,6 +87,13 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: com.sephr.ios.http
             CFBundleURLSchemes: [http, https]
+    postBuildScripts:
+      # Must run after Embed Frameworks, before the final app codesign.
+      - name: Re-sign LeapSDK nested dylibs
+        path: scripts/resign_leapsdk.sh
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/LeapSDK.framework/LeapSDK
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sephr.ios
@@ -85,3 +102,5 @@ targets:
         SUPPORTS_MACCATALYST: "NO"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_ENTITLEMENTS: Resources/Sephr.entitlements
+        # Re-sign LeapSDK nested dylibs after embed — needs codesign access.
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
