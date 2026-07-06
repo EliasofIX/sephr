@@ -1,5 +1,5 @@
 // swift-tools-version: 5.9
-// Sephr — proprietary. Not for redistribution.
+// Sephr — PolyForm Noncommercial License 1.0.0 (see LICENSE).
 import PackageDescription
 
 let package = Package(

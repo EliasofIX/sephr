@@ -108,6 +108,7 @@ final class SuperBrowseEngine {
         }
 
         // 3. Stream the answer
+        await model.waitUntilReady()
         session.startGenerating()
         let stream = model.answer(
             system: Prompts.superBrowseSystem,

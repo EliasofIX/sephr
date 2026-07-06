@@ -58,6 +58,7 @@ final class BrowserEngine: NSObject {
 
     override init() {
         super.init()
+        model.prepare()
         syncActiveWebView()
         Task { [pool] in
             if let list = await ContentBlocker.ruleList() {

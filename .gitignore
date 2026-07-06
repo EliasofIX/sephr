@@ -1,6 +1,52 @@
+# Swift Package Manager
 .build/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+*.xcresult
+
+# Sephr build outputs
 build/
+
+# Chromium bootstrap tree (downloaded + patched locally, multi-GB)
 .chromium-src/
+
+# Build / QA logs (may contain local paths)
 *.log
+.last_*
+
+# macOS
 .DS_Store
-/tmp/
+.AppleDouble
+.LSOverride
+._*
+
+# Editor / IDE (local preferences)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Secrets and signing material — never commit these
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision
+*.cer
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local screenshots / scratch
+.sephr_ios_app.png
+
+# CocoaPods (if used alongside SPM)
+Pods/

@@ -29,7 +29,7 @@ The project directory is not a git repo (no `.git` anywhere up the tree), but th
 - [ ] **Step 1: Init repo and write .gitignore**
 
 ```bash
-cd /Users/eliasgansbuhler/dcav/Sephr
+cd /path/to/Sephr
 git init
 ```
 

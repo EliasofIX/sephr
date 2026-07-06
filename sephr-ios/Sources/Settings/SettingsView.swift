@@ -8,7 +8,7 @@ struct IntelligencePaneRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("LFM2-VL-450M · BF16")
+                Text("LFM2-VL-450M · F16")
                     .font(DC.TypeScale.callout)
                 Text(detail)
                     .font(DC.TypeScale.caption)

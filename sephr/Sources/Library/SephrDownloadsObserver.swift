@@ -48,9 +48,15 @@ final class SephrDownloadsObserver: ObservableObject {
     func open(_ download: CALDownload) {
         guard download.state == .complete else { return }
         let path = download.targetPath
-        guard !path.isEmpty,
-              FileManager.default.fileExists(atPath: path) else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        guard !path.isEmpty else { return }
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.open(url)
+        } else {
+            // The file may have been moved after download; fall back to
+            // selecting it in Finder so the user isn't left with a no-op.
+            revealInFinder(download)
+        }
     }
 
     func revealInFinder(_ download: CALDownload) {

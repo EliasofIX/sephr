@@ -1,0 +1,12 @@
+# Patch files must keep Unix line endings for `git apply` / `quilt` to work.
+*.patch text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Swift / ObjC sources
+*.swift text eol=lf
+*.m text eol=lf
+*.mm text eol=lf
+*.h text eol=lf
+*.cc text eol=lf

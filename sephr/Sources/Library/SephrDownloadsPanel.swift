@@ -60,66 +60,57 @@ private struct DownloadRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Button {
-                obs.open(d)
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: iconName)
-                        .font(.system(size: 16, weight: .regular))
-                        .foregroundStyle(iconColor)
-                        .frame(width: 22)
+            HStack(spacing: 12) {
+                Image(systemName: iconName)
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 22)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(filename)
-                            .font(.system(size: 13, weight: .medium))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(secondaryLine)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        if d.state == .inProgress, d.totalBytes > 0 {
-                            ProgressView(
-                                value: Double(d.receivedBytes),
-                                total: Double(d.totalBytes))
-                                .progressViewStyle(.linear)
-                                .frame(height: 4)
-                        }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(filename)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(secondaryLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if d.state == .inProgress, d.totalBytes > 0 {
+                        ProgressView(
+                            value: Double(d.receivedBytes),
+                            total: Double(d.totalBytes))
+                            .progressViewStyle(.linear)
+                            .frame(height: 4)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .disabled(d.state != .complete)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .overlay {
+                SephrDownloadRowClickSurface(
+                    onClick: { rowClicked() },
+                    menu: { SephrDownloadMenuBuilder.menu(for: d) })
+            }
 
             actionButtons
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .contextMenu { downloadContextMenu }
     }
 
-    @ViewBuilder
-    private var downloadContextMenu: some View {
-        if d.state == .complete {
-            Button("Open") { obs.open(d) }
-            Button("Show in Finder") { obs.revealInFinder(d) }
-        } else if d.state == .inProgress {
-            Button("Pause") { downloadsService.pause(d.identifier) }
-            Button("Cancel", role: .destructive) { downloadsService.cancel(d.identifier) }
-        } else if d.state == .paused {
-            Button("Resume") { downloadsService.resume(d.identifier) }
-            Button("Cancel", role: .destructive) { downloadsService.cancel(d.identifier) }
+    private func rowClicked() {
+        switch d.state {
+        case .complete:
+            obs.open(d)
+        case .inProgress:
+            downloadsService.pause(d.identifier)
+        case .paused:
+            downloadsService.resume(d.identifier)
+        case .canceled, .interrupted:
+            break
+        @unknown default:
+            break
         }
-
-        if !d.sourceURL.isEmpty {
-            Button("Copy Link") { obs.copyLink(d) }
-        }
-
-        Divider()
-
-        Button("Remove from List") { obs.hide(d.identifier) }
     }
 
     private var downloadsService: CALDownloads {

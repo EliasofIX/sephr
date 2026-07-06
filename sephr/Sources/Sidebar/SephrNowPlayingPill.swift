@@ -72,36 +72,17 @@ private struct NowPlayingPillView: View {
                    value: model.hasSession)
     }
 
+    private static let hoverCollapseDuration = 0.18
+    private static let headerFadeOutDuration = 0.08
+    private static let headerFadeInDuration = 0.12
+
     private var pill: some View {
         VStack(spacing: 0) {
             // Hover-expanded header: what's playing + dismiss, Zen-style.
-            if hovering {
-                HStack(spacing: 6) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(model.title)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        if let artist = model.artist, !artist.isEmpty {
-                            Text(artist)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    NowPlayingControl(symbol: "xmark",
-                                      label: "Hide Player") {
-                        model.onDismiss?()
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.top, 8)
-                .padding(.bottom, 2)
-                .transition(.opacity)
-            }
+            // Kept in the hierarchy (not `if hovering`) so collapse can fade
+            // text out before the transport row rises — avoids title/artist
+            // painting over the play button mid-animation.
+            expandedHeader
 
             HStack(spacing: 2) {
                 Button {
@@ -162,7 +143,8 @@ private struct NowPlayingPillView: View {
         }
         .modifier(NowPlayingGlass())
         .onHover { inside in
-            withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) {
+            withAnimation(reduceMotion ? nil
+                          : .snappy(duration: Self.hoverCollapseDuration)) {
                 hovering = inside
             }
         }
@@ -171,6 +153,46 @@ private struct NowPlayingPillView: View {
         .padding(.horizontal, 10)
         .padding(.top, 4)
         .padding(.bottom, 2)
+    }
+
+    private var expandedHeader: some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let artist = model.artist, !artist.isEmpty {
+                    Text(artist)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            Spacer(minLength: 0)
+            NowPlayingControl(symbol: "xmark",
+                              label: "Hide Player") {
+                model.onDismiss?()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+        .opacity(hovering ? 1 : 0)
+        .frame(maxHeight: hovering ? nil : 0, alignment: .top)
+        .clipped()
+        .allowsHitTesting(hovering)
+        .accessibilityHidden(!hovering)
+        .animation(reduceMotion ? nil : headerOpacityAnimation, value: hovering)
+    }
+
+    private var headerOpacityAnimation: Animation {
+        hovering
+            ? .easeOut(duration: Self.headerFadeInDuration)
+                .delay(Self.hoverCollapseDuration * 0.25)
+            : .easeOut(duration: Self.headerFadeOutDuration)
     }
 }
 

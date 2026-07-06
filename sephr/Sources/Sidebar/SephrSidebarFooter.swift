@@ -126,7 +126,7 @@ final class SephrSidebarFooter: NSView {
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
-        let host = NSHostingController(rootView: SephrDownloadsPanel())
+        let host = SephrFirstMouseHostingController(rootView: SephrDownloadsPanel())
         host.view.frame = NSRect(x: 0, y: 0, width: 360, height: 320)
         popover.contentViewController = host
         popover.show(relativeTo: downloadsButton.bounds,

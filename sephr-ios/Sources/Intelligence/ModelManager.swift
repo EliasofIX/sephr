@@ -1,17 +1,18 @@
 import Foundation
 import Observation
+import os
 import UIKit
 #if canImport(LeapSDK)
-import LeapSDK
+@preconcurrency import LeapSDK
 #endif
 
-/// Observable wrapper around the on-device LFM2-VL-450M Q4_0 runtime,
-/// served by Liquid AI's LEAP iOS SDK.
+/// Observable wrapper around the on-device LFM2-VL-450M F16 runtime,
+/// served by Liquid AI's unified LEAP SDK.
 ///
 /// Two responsibilities: (a) drive the first-run download via LEAP's
-/// `Leap.load(model:quantization:downloadProgressHandler:)`, and report
-/// progress to the Settings UI; (b) expose a streaming `answer(...)` API
-/// the feature engines call.
+/// `Leap.load(model:quantization:options:)`, and report progress to the
+/// Settings UI; (b) expose a streaming `answer(...)` API the feature
+/// engines call.
 ///
 /// LEAP integration runs behind `#if canImport(LeapSDK)` so the rest of
 /// the app builds even before the SwiftPM dependency is resolved — the
@@ -34,37 +35,22 @@ final class ModelManager {
 
     /// Liquid AI's model identifier in the LEAP model library. The
     /// quantization string maps to the GGUF variant LEAP downloads.
-    /// BF16 is the full-precision weights Liquid trained on — bigger
-    /// (~711 MB) but materially better than Q4_0 on the kind of
-    /// long-context grounded synthesis SuperBrowse asks for.
+    /// F16 is the full-precision GGUF variant — bigger (~711 MB) but
+    /// materially better than Q4_0 on the kind of long-context grounded
+    /// synthesis SuperBrowse asks for. LEAP's manifest keys are F16,
+    /// Q8_0, and Q4_0 (not BF16).
     static let modelName = "LFM2-VL-450M"
-    static let quantization = "BF16"
+    static let quantization = "F16"
 
-    /// Liquid's published sampling defaults for LFM2-VL, plus an
-    /// explicit 32 K sequence length (the model's full native context
-    /// window) and a 2 K output cap so we never let the model loop into
-    /// the runtime ceiling.
-    private static let vlGenerationOptions = makeGenerationOptions()
+    private static let log =
+        Logger(subsystem: "com.sephr.ios", category: "ModelManager")
 
     #if canImport(LeapSDK)
-    private static func makeGenerationOptions() -> GenerationOptions {
-        GenerationOptions(
-            temperature: 0.3,
-            minP: 0.15,
-            repetitionPenalty: 1.1,
-            sequenceLength: 32_768,
-            maxOutputTokens: 2_048)
-    }
-    #else
-    private static func makeGenerationOptions() -> Int { 0 }
+    private let inferenceWorker = InferenceWorker()
     #endif
 
     private(set) var state: State = .missing
     private var preparation: Task<Void, Never>?
-
-    #if canImport(LeapSDK)
-    private var runner: (any ModelRunner)?
-    #endif
 
     init() {}
 
@@ -80,13 +66,15 @@ final class ModelManager {
         }
     }
 
+    /// Wait until the model is ready (or failed). Call before generation
+    /// so prefill never races a still-warming runner.
+    func waitUntilReady() async {
+        prepare()
+        _ = await preparation?.value
+    }
+
     private func runPreparation() async {
         #if canImport(LeapSDK)
-        // LEAP handles the download itself — including caching to
-        // Application Support — and streams progress 0..1. We bridge
-        // its non-isolated progress callback into our @MainActor state
-        // via an AsyncStream so the callback closure captures only the
-        // continuation (Sendable) and not `self`.
         state = .downloading(progress: 0)
         let (progressStream, continuation) =
             AsyncStream<Double>.makeStream(of: Double.self)
@@ -104,16 +92,25 @@ final class ModelManager {
             = { progress, _ in
                 continuation.yield(progress)
             }
+        let cacheDir = FileManager.default.urls(
+            for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("leap-kv-cache", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: cacheDir, withIntermediateDirectories: true)
+        let loadOptions = LiquidInferenceEngineManifestOptions(
+            cacheOptions: .enabled(path: cacheDir.path),
+            contextSize: 32_768)
         do {
-            let runner = try await Leap.load(
+            let runner = try await Leap.shared.load(
                 model: Self.modelName,
                 quantization: Self.quantization,
-                options: nil,
-                downloadProgressHandler: progressHandler)
+                options: loadOptions,
+                progress: progressHandler)
             continuation.finish()
             _ = await watcher.value
-            self.runner = runner
+            await inferenceWorker.install(runner)
             state = .ready
+            Self.log.info("LEAP runner ready (F16, 32K context, KV cache on)")
         } catch {
             continuation.finish()
             _ = await watcher.value
@@ -129,13 +126,12 @@ final class ModelManager {
 
     /// Drop the in-memory runner and retry the load. With LEAP's default
     /// cache the next prepare() usually hits the local copy rather than
-    /// re-downloading — use `LeapModelDownloader.removeModel(...)` if a
-    /// true purge is needed (separate SwiftPM product).
+    /// re-downloading.
     func resetAndRedownload() {
         preparation?.cancel()
         preparation = nil
         #if canImport(LeapSDK)
-        runner = nil
+        Task { await inferenceWorker.clear() }
         #endif
         state = .missing
         prepare()
@@ -153,62 +149,44 @@ final class ModelManager {
     /// callers downsample before calling).
     func answer(system: String, user: String,
                 image: Data?) -> AsyncStream<String> {
-        AsyncStream { continuation in
-            Task { [weak self] in
-                guard let self else { continuation.finish(); return }
-                guard self.state.isReady else {
-                    continuation.yield(
-                        "Model is not ready yet. Open Settings to retry.")
-                    continuation.finish()
-                    return
-                }
-
-                #if canImport(LeapSDK)
-                guard let runner = self.runner else {
-                    continuation.finish(); return
-                }
-                let systemMessage = ChatMessage(
-                    role: .system, content: [.text(system)])
-                var userContent: [ChatMessageContent] = []
-                if let image {
-                    userContent.append(.fromJPEGData(image))
-                }
-                userContent.append(.text(user))
-                let userMessage = ChatMessage(
-                    role: .user, content: userContent)
-
-                let conversation = Conversation(
-                    modelRunner: runner,
-                    history: [systemMessage])
-                do {
-                    let stream = conversation.generateResponse(
-                        message: userMessage,
-                        generationOptions: Self.vlGenerationOptions)
-                    for try await response in stream {
-                        switch response {
-                        case let .chunk(text):
-                            continuation.yield(text)
-                        case .reasoningChunk:
-                            continue
-                        case .complete:
-                            continuation.finish()
-                            return
-                        @unknown default:
-                            continue
-                        }
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.yield(
-                        "\n\nGeneration failed: \(error.localizedDescription)")
-                    continuation.finish()
-                }
-                #else
-                await MockBackend.stream(into: continuation,
-                                         system: system, user: user)
-                #endif
+        #if canImport(LeapSDK)
+        guard state.isReady else {
+            return AsyncStream { continuation in
+                continuation.yield(
+                    "Model is not ready yet. Open Settings to retry.")
+                continuation.finish()
             }
         }
+        let started = Date()
+        let metricsLog = Logger(
+            subsystem: "com.sephr.ios", category: "Inference")
+        return AsyncStream<String>(bufferingPolicy: .unbounded) {
+            continuation in
+            let task = Task {
+                let stream = await inferenceWorker.streamAnswer(
+                    system: system,
+                    user: user,
+                    image: image) {
+                        let ttft = Date().timeIntervalSince(started)
+                        metricsLog.info(
+                            "TTFT \(ttft, format: .fixed(precision: 3))s")
+                    }
+                for await chunk in stream {
+                    continuation.yield(chunk)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+        #else
+        return AsyncStream<String>(bufferingPolicy: .unbounded) {
+            continuation in
+            Task { @MainActor in
+                await MockBackend.stream(
+                    into: continuation, system: system, user: user)
+            }
+        }
+        #endif
     }
 }
 

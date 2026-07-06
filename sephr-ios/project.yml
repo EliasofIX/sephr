@@ -5,21 +5,21 @@ options:
     iOS: "26.0"
   createIntermediateGroups: true
 
-# Liquid AI's LEAP iOS SDK — drives the on-device LFM2-VL-450M runtime
+# Liquid AI's unified LEAP SDK — drives the on-device LFM2-VL-450M runtime
 # behind SuperBrowse + Summarize. ModelManager.swift conditionally compiles
 # against it (#if canImport(LeapSDK)) so the build still produces a usable
 # mock backend if the dependency fails to resolve.
 packages:
   LeapSDK:
-    url: https://github.com/Liquid4All/leap-ios.git
-    from: "0.7.7"
+    url: https://github.com/Liquid4All/leap-sdk.git
+    from: "0.10.7"
 
 settings:
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "2"
+    CURRENT_PROJECT_VERSION: "3"
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGNING_REQUIRED: "NO"
     # Signing must be ALLOWED so entitlements embed when present; the simulator

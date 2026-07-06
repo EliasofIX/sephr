@@ -33,6 +33,14 @@ except ImportError:
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "sephr" / "Resources" / "AppIcon-source.png"
 ASSET_SET = ROOT / "sephr" / "Resources" / "Assets.xcassets" / "AppIcon.appiconset"
+IOS_ICON = (
+    ROOT
+    / "sephr-ios"
+    / "Resources"
+    / "Assets.xcassets"
+    / "AppIcon.appiconset"
+    / "AppIcon-1024.png"
+)
 
 # (size_px, filename) — the asset-catalog slots. The @2x files are the same
 # pixel dimensions as the next size up's 1x, per the macOS convention.
@@ -142,6 +150,11 @@ def main() -> int:
         check=True,
     )
     print(f"\n  → {out_icns}")
+
+    # 3. iOS — single 1024×1024 slot in the asset catalog.
+    IOS_ICON.parent.mkdir(parents=True, exist_ok=True)
+    resized(master, 1024).save(IOS_ICON, format="PNG")
+    print(f"  → {IOS_ICON}")
     return 0
 
 

@@ -47,6 +47,7 @@ final class SummarizeEngine {
         }
 
         // 2. Prompt the model.
+        await model.waitUntilReady()
         session.startGenerating()
         let stream = model.answer(
             system: Prompts.summarizeSystem,

@@ -92,6 +92,7 @@ final class SephrNewTabRow: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        guard !isTabListHoverSuppressed else { return }
         hovered = true
         refreshBackground()
     }

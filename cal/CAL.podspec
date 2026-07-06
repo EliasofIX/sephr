@@ -3,7 +3,7 @@ Pod::Spec.new do |s|
   s.version           = "0.1.0"
   s.summary           = "Chromium AppKit Layer — Sephr private bridge"
   s.homepage          = "https://sephr.internal"
-  s.license           = { :type => "Proprietary", :text => "Sephr — All rights reserved." }
+  s.license           = { :type => "PolyForm-Noncommercial-1.0.0", :file => "../LICENSE" }
   s.author            = { "Sephr" => "team@sephr.internal" }
   s.source            = { :path => "." }
 

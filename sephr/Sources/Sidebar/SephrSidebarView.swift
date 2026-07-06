@@ -39,12 +39,21 @@ final class SephrSidebarToggleButton: SephrHoverButton {
 /// enclosing sidebar's `scrollWheel(with:)` and keeps vertical / mouse
 /// scrolls for itself.
 final class SephrSidebarSwipeScrollView: NSScrollView {
+    /// While true, tab rows ignore `mouseEntered` so scroll-driven
+    /// tracking events can't stack stale hovers under a stationary pointer.
+    var suppressTabListHover = false
+
+    /// Fired for vertical trackpad / mouse-wheel scrolls handled by this
+    /// view — used to suspend tab hover until the gesture settles.
+    var onVerticalScrollWheel: ((NSEvent) -> Void)?
+
     override func scrollWheel(with event: NSEvent) {
         let dx = event.scrollingDeltaX
         let dy = event.scrollingDeltaY
         if event.hasPreciseScrollingDeltas, abs(dx) > abs(dy) * 1.5 {
             nextResponder?.scrollWheel(with: event)
         } else {
+            onVerticalScrollWheel?(event)
             super.scrollWheel(with: event)
         }
     }
@@ -92,6 +101,9 @@ final class SephrSidebarView: NSView {
     /// Structure-channel subscription driving `renderTabs()`. Dropping
     /// the token unsubscribes, so it lives for the view's lifetime.
     private var structureToken: TabEventToken?
+
+    /// Debounced restore after tab-list scroll / scroller drag ends.
+    private var tabListHoverRestoreWork: DispatchWorkItem?
 
     /// Accumulator for 2-finger horizontal trackpad swipes. We commit a
     /// space switch when the accumulator crosses `swipeThreshold` OR a
@@ -248,6 +260,9 @@ final class SephrSidebarView: NSView {
         tabScrollView.scrollerStyle = .overlay
         tabScrollView.drawsBackground = false
         tabScrollView.contentView.postsBoundsChangedNotifications = true
+        tabScrollView.onVerticalScrollWheel = { [weak self] event in
+            self?.handleTabListScrollWheel(event)
+        }
 
         tabStackView.orientation = .vertical
         tabStackView.alignment = .leading
@@ -751,21 +766,82 @@ final class SephrSidebarView: NSView {
             self, selector: #selector(onTabListScrolled),
             name: NSView.boundsDidChangeNotification,
             object: tabScrollView.contentView)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(onTabListLiveScrollBegan),
+            name: NSScrollView.willStartLiveScrollNotification,
+            object: tabScrollView)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(onTabListLiveScrollEnded),
+            name: NSScrollView.didEndLiveScrollNotification,
+            object: tabScrollView)
     }
 
-    /// Scroll moves tab rows under a stationary pointer. AppKit's
-    /// mouseEntered/Exited tracking doesn't fully keep up, so stale
-    /// hovers can stack on multiple cells — clear them and re-apply
-    /// hover only to the row actually under the cursor.
-    @objc private func onTabListScrolled() {
+    // MARK: — Tab-list hover during scroll
+
+    @objc private func onTabListLiveScrollBegan() {
+        beginTabListHoverSuppression()
+    }
+
+    @objc private func onTabListLiveScrollEnded() {
+        scheduleTabListHoverRestore()
+    }
+
+    private func handleTabListScrollWheel(_ event: NSEvent) {
+        let phaseActive = event.phase == .began || event.phase == .mayBegin
+            || event.phase == .changed
+        let momentumActive = event.momentumPhase == .began
+            || event.momentumPhase == .changed
+        let phaseEnded = event.phase == .ended || event.phase == .cancelled
+        let momentumEnded = event.momentumPhase == .ended
+        let legacyWheel = event.phase.isEmpty && event.momentumPhase.isEmpty
+
+        if phaseActive || momentumActive || legacyWheel {
+            beginTabListHoverSuppression()
+        }
+        if phaseEnded || momentumEnded || legacyWheel {
+            scheduleTabListHoverRestore()
+        }
+    }
+
+    private func beginTabListHoverSuppression() {
+        tabListHoverRestoreWork?.cancel()
+        let wasSuppressed = tabScrollView.suppressTabListHover
+        tabScrollView.suppressTabListHover = true
+        if !wasSuppressed {
+            clearAllTabListHovers()
+        }
+    }
+
+    private func scheduleTabListHoverRestore() {
+        tabListHoverRestoreWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.endTabListHoverSuppression()
+        }
+        tabListHoverRestoreWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
+    private func endTabListHoverSuppression() {
+        tabScrollView.suppressTabListHover = false
         syncTabListHoverUnderPointer()
     }
 
-    private func syncTabListHoverUnderPointer() {
+    /// Stray `mouseEntered` events can still arrive mid-scroll; keep
+    /// clearing without re-applying until the gesture ends.
+    @objc private func onTabListScrolled() {
+        guard tabScrollView.suppressTabListHover else { return }
+        clearAllTabListHovers()
+    }
+
+    private func clearAllTabListHovers() {
         forEachHoverableTabRow { view in
             if let cell = view as? SephrTabCell { cell.clearHoverState() }
             else if let row = view as? SephrNewTabRow { row.clearHoverState() }
         }
+    }
+
+    private func syncTabListHoverUnderPointer() {
+        clearAllTabListHovers()
 
         guard let window, let doc = tabScrollView.documentView else { return }
         let mouseInWindow = window.mouseLocationOutsideOfEventStream
@@ -977,5 +1053,14 @@ final class SephrSidebarFlippedClip: NSView {
             if isTopLevelTab { topLevelIndex += 1 }
         }
         return topLevelIndex
+    }
+}
+
+extension NSView {
+    /// True while the sidebar tab list is scrolling — tab rows should
+    /// ignore `mouseEntered` until the gesture settles.
+    var isTabListHoverSuppressed: Bool {
+        (enclosingScrollView as? SephrSidebarSwipeScrollView)?
+            .suppressTabListHover ?? false
     }
 }

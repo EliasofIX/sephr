@@ -77,59 +77,39 @@ struct SephrLibraryDownloadsView: View {
     private func downloadRow(_ d: CALDownload) -> some View {
         let selected = selection == d.identifier
         let filename = d.targetPath.components(separatedBy: "/").last ?? d.targetPath
-        return Button {
-            selection = d.identifier
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: iconName(for: d.state))
-                    .foregroundStyle(iconColor(for: d.state))
-                    .frame(width: 20)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(filename)
-                        .font(.system(size: 13, weight: .medium))
-                        .lineLimit(1)
-                    Text(secondaryLine(for: d))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
+        return HStack(spacing: 10) {
+            Image(systemName: iconName(for: d.state))
+                .foregroundStyle(iconColor(for: d.state))
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(filename)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                Text(secondaryLine(for: d))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: DC.Radius.standard, style: .continuous)
-                    .fill(selected
-                          ? Color.white.opacity(0.10)
-                          : Color.clear))
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
-        .contextMenu { downloadContextMenu(for: d) }
-    }
-
-    @ViewBuilder
-    private func downloadContextMenu(for d: CALDownload) -> some View {
-        let pid = SephrSpaceManager.shared.currentSpace.profileID
-        let svc = CALDownloads.sharedInstance(forProfile: pid)
-
-        if d.state == .complete {
-            Button("Open") { obs.open(d) }
-            Button("Show in Finder") { obs.revealInFinder(d) }
-        } else if d.state == .inProgress {
-            Button("Pause") { svc.pause(d.identifier) }
-            Button("Cancel", role: .destructive) { svc.cancel(d.identifier) }
-        } else if d.state == .paused {
-            Button("Resume") { svc.resume(d.identifier) }
-            Button("Cancel", role: .destructive) { svc.cancel(d.identifier) }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: DC.Radius.standard, style: .continuous)
+                .fill(selected
+                      ? Color.white.opacity(0.10)
+                      : Color.clear))
+        .contentShape(Rectangle())
+        .overlay {
+            SephrDownloadRowClickSurface(
+                onClick: {
+                    selection = d.identifier
+                    if d.state == .complete {
+                        obs.open(d)
+                    }
+                },
+                menu: { SephrDownloadMenuBuilder.menu(for: d) })
         }
-
-        if !d.sourceURL.isEmpty {
-            Button("Copy Link") { obs.copyLink(d) }
-        }
-
-        Divider()
-
-        Button("Remove from List") { obs.hide(d.identifier) }
     }
 
     @ViewBuilder

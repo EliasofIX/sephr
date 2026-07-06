@@ -459,7 +459,7 @@ final class SephrTabCell: NSView {
         self.hovered = hovered
         refreshAppearance()
         if hovered {
-            closeButton.animator().alphaValue = 1
+            closeButton.alphaValue = 1
             guard allowPeek, SephrPreferences.peekOnSidebarHover else { return }
             hoverTimer?.invalidate()
             hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.3,
@@ -471,7 +471,7 @@ final class SephrTabCell: NSView {
                 self.peekPopover = popover
             }
         } else {
-            closeButton.animator().alphaValue = 0
+            closeButton.alphaValue = 0
             hoverTimer?.invalidate()
             hoverTimer = nil
             peekPopover?.close()
@@ -497,6 +497,7 @@ final class SephrTabCell: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        guard !isTabListHoverSuppressed else { return }
         setHovered(true)
     }
 
