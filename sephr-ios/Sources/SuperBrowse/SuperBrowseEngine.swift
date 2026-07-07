@@ -89,16 +89,29 @@ final class SuperBrowseEngine {
         }
         session.setSerpCandidates(candidates.map { $0.host })
 
-        // 2. Fan-out reads
-        await withTaskGroup(of: SuperBrowseSource?.self) { group in
-            for candidate in candidates {
-                group.addTask { [weak self] in
-                    await self?.read(candidate: candidate, fleet: fleet)
+        // 2. Fan-out reads — two at a time so six hidden WKWebViews never
+        // share the heap with the F16 runner at the ingestion handoff.
+        for batchStart in stride(from: 0, to: candidates.count, by: 2) {
+            guard !Task.isCancelled else { session.cancel(); return }
+            let batchEnd = min(batchStart + 2, candidates.count)
+            let batch = Array(candidates[batchStart..<batchEnd])
+            await withTaskGroup(of: (Int, SuperBrowseSource?).self) { group in
+                for (offset, candidate) in batch.enumerated() {
+                    let index = batchStart + offset
+                    group.addTask { @MainActor [weak self] in
+                        let source = await self?.read(
+                            candidate: candidate, fleet: fleet)
+                        return (index, source)
+                    }
                 }
-            }
-            for await source in group {
-                guard !Task.isCancelled else { return }
-                if let source { session.appendSource(source) }
+                var indexed: [(Int, SuperBrowseSource)] = []
+                for await (index, source) in group {
+                    guard !Task.isCancelled else { return }
+                    if let source { indexed.append((index, source)) }
+                }
+                for (_, source) in indexed.sorted(by: { $0.0 < $1.0 }) {
+                    session.appendSource(source)
+                }
             }
         }
         guard !Task.isCancelled else { session.cancel(); return }
