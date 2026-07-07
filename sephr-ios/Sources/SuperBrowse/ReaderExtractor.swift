@@ -8,18 +8,15 @@ import WebKit
 @MainActor
 enum ReaderExtractor {
 
-    /// Per-source character budget for SuperBrowse fan-out. Inference
-    /// trims to `InferenceWorker.softPromptTokenCeiling` (8 192 tokens)
-    /// before prefill — ~28 K chars total across six sources. Reserve
-    /// ~2 K chars for the question + headers; ~4.3 K per source keeps
-    /// the assembled prompt under the ceiling without relying on native
-    /// tokenization of an 80 K+ blob (which has been observed to jetsam).
-    static let perSourceCharacterBudget = 4_300
+    /// Per-source cap derived from `InferenceBudget` — see that file.
+    static var perSourceCharacterBudget: Int {
+        InferenceBudget.perSourceCharacterBudget
+    }
 
-    /// Summarize-mode budget — one page, no fan-out, so we can spend
-    /// the whole window on it. 80 K chars ≈ 22 K input tokens, leaving
-    /// ~10 K for system + bullets.
-    static let summarizePageCharacterBudget = 80_000
+    /// Single-page Summarize cap — trimmed again in `InferenceWorker`.
+    static var summarizePageCharacterBudget: Int {
+        InferenceBudget.summarizePageCharacterBudget
+    }
 
     /// Output from one extraction attempt. `body` is empty if the page
     /// had no readable article.
@@ -90,41 +87,12 @@ enum ReaderExtractor {
                   let body = dict["body"] as? String,
                   !body.isEmpty else { return nil }
             let title = (dict["title"] as? String) ?? ""
-            let cleaned = normalizeForModel(
-                truncate(body, to: perSourceCharacterBudget))
+            let cleaned = TextBudget.normalizeForModel(
+                TextBudget.truncate(body, to: perSourceCharacterBudget))
             return Extracted(title: title, body: cleaned)
         } catch {
             return nil
         }
     }
 
-    /// Collapse whitespace, dedupe paragraphs, and normalize Unicode so
-    /// the same character budget carries fewer wasted tokens at prefill.
-    nonisolated static func normalizeForModel(_ text: String) -> String {
-        let normalized = text.precomposedStringWithCompatibilityMapping
-        var paragraphs = normalized
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        var seen = Set<String>()
-        paragraphs = paragraphs.filter { paragraph in
-            let key = paragraph.lowercased()
-            guard !seen.contains(key) else { return false }
-            seen.insert(key)
-            return true
-        }
-        return paragraphs.joined(separator: "\n\n")
-    }
-
-    /// Cap a string at `n` characters at the last whitespace boundary,
-    /// appending an ellipsis if it had to be cut.
-    nonisolated static func truncate(_ text: String, to n: Int) -> String {
-        guard text.count > n else { return text }
-        let endIndex = text.index(text.startIndex, offsetBy: n)
-        let head = text[..<endIndex]
-        if let lastSpace = head.lastIndex(where: { $0.isWhitespace }) {
-            return String(text[..<lastSpace]) + "…"
-        }
-        return String(head) + "…"
-    }
 }

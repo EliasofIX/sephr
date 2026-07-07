@@ -12,15 +12,11 @@ actor InferenceWorker {
     private static let log =
         Logger(subsystem: "com.sephr.ios", category: "Inference")
 
-    /// Soft ceiling from empirical SuperBrowse/Summarize runs in
-    /// `Prompts.swift` — not the runtime context window.
-    private static let softPromptTokenCeiling = 8_192
-
     private static let generationOptions = GenerationOptions()
         .with(temperature: 0.3)
         .with(minP: 0.15)
         .with(repetitionPenalty: 1.1)
-        .with(maxTokens: 2_048)
+        .with(maxTokens: InferenceBudget.maxOutputTokens)
 
     private var runner: (any ModelRunner)?
 
@@ -129,18 +125,10 @@ actor InferenceWorker {
         user: String
     ) async throws -> String {
         guard let runner = self.runner else { return user }
-        let normalized = ReaderExtractor.normalizeForModel(user)
-
-        // Never hand a six-source SuperBrowse blob to getPromptTokensSize
-        // wholesale — on device that has been observed to jetsam. Shrink
-        // with a char estimate first, then tokenize the smaller candidate.
-        let roughUserBudget = max(
-            512, Self.softPromptTokenCeiling - 256)
-        let charCeiling = max(
-            512, roughUserBudget * 35 / 10)
-        var candidate = normalized.count > charCeiling
-            ? ReaderExtractor.truncate(normalized, to: charCeiling)
-            : normalized
+        let normalized = TextBudget.normalizeForModel(user)
+        let charCeiling = InferenceBudget.estimatedUserCharCeiling
+        var candidate = PromptTrimmer.pretrimForTokenization(
+            normalized, maxChars: charCeiling)
 
         let systemMessage = ChatMessage_withArray(
             role: .system, content: [.text(system)])
@@ -149,7 +137,8 @@ actor InferenceWorker {
                 messages: [systemMessage],
                 addBosToken: true).intValue)
         let userBudget = max(
-            512, Self.softPromptTokenCeiling - systemTokens)
+            512,
+            InferenceBudget.softPromptTokenCeiling - systemTokens)
 
         var userMessage = ChatMessage_withArray(
             role: .user, content: [.text(candidate)])
@@ -158,19 +147,19 @@ actor InferenceWorker {
                 messages: [systemMessage, userMessage],
                 addBosToken: true).intValue)
 
-        guard total > Self.softPromptTokenCeiling else { return candidate }
+        guard total > InferenceBudget.softPromptTokenCeiling else {
+            return candidate
+        }
 
-        // SuperBrowse prompts are numbered sources — trim from the tail
-        // one source at a time so we drop whole references, not random
-        // interior paragraphs.
-        if let trimmed = trimSuperBrowseSources(
-            in: candidate, overBudget: { text in
+        if let trimmed = try await PromptTrimmer.trimSuperBrowseSources(
+            in: candidate,
+            overBudget: { text in
                 let message = ChatMessage_withArray(
                     role: .user, content: [.text(text)])
                 return Int(try await runner.getPromptTokensSize(
                     messages: [systemMessage, message],
                     addBosToken: true).intValue)
-                    > Self.softPromptTokenCeiling
+                    > InferenceBudget.softPromptTokenCeiling
             }) {
             candidate = trimmed
             userMessage = ChatMessage_withArray(
@@ -179,7 +168,9 @@ actor InferenceWorker {
                 try await runner.getPromptTokensSize(
                     messages: [systemMessage, userMessage],
                     addBosToken: true).intValue)
-            if total <= Self.softPromptTokenCeiling { return candidate }
+            if total <= InferenceBudget.softPromptTokenCeiling {
+                return candidate
+            }
         }
 
         var paragraphs = candidate
@@ -188,7 +179,8 @@ actor InferenceWorker {
                 !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
 
-        while paragraphs.count > 1, total > Self.softPromptTokenCeiling {
+        while paragraphs.count > 1,
+              total > InferenceBudget.softPromptTokenCeiling {
             paragraphs.removeLast()
             candidate = paragraphs.joined(separator: "\n\n")
             userMessage = ChatMessage_withArray(
@@ -199,50 +191,12 @@ actor InferenceWorker {
                     addBosToken: true).intValue)
         }
 
-        if total > Self.softPromptTokenCeiling {
-            let charBudget = max(256, userBudget * 35 / 10)
-            return ReaderExtractor.truncate(candidate, to: charBudget)
+        if total > InferenceBudget.softPromptTokenCeiling {
+            let charBudget = InferenceBudget.estimatedCharBudget(
+                forTokenBudget: userBudget)
+            return TextBudget.truncate(candidate, to: charBudget)
         }
         return candidate
-    }
-
-    /// Drop trailing `[N] host — title` source blocks until `overBudget`
-    /// returns false. Returns nil when the prompt isn't SuperBrowse-shaped.
-    private func trimSuperBrowseSources(
-        in prompt: String,
-        overBudget: (String) async throws -> Bool
-    ) async throws -> String? {
-        guard prompt.contains("QUESTION:") else { return nil }
-        let lines = prompt.components(separatedBy: "\n")
-        var headerLines: [String] = []
-        var sources: [[String]] = []
-        var currentSource: [String] = []
-        let sourceHeader = try NSRegularExpression(
-            pattern: #"^\[\d+\] "#)
-
-        for line in lines {
-            let range = NSRange(line.startIndex..., in: line)
-            if sourceHeader.firstMatch(in: line, range: range) != nil {
-                if !currentSource.isEmpty { sources.append(currentSource) }
-                currentSource = [line]
-            } else if currentSource.isEmpty {
-                headerLines.append(line)
-            } else {
-                currentSource.append(line)
-            }
-        }
-        if !currentSource.isEmpty { sources.append(currentSource) }
-        guard sources.count > 1 else { return nil }
-
-        while sources.count > 1,
-              try await overBudget(
-                ([headerLines] + sources).flatMap { $0 }
-                    .joined(separator: "\n")) {
-            sources.removeLast()
-        }
-        let trimmed = ([headerLines] + sources).flatMap { $0 }
-            .joined(separator: "\n")
-        return trimmed == prompt ? nil : trimmed
     }
 }
 #endif

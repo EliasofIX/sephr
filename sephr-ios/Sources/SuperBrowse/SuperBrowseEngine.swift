@@ -5,7 +5,7 @@ import WebKit
 ///
 /// 1. Fetch the DDG SERP in a hidden WKWebView.
 /// 2. Extract the top six result candidates.
-/// 3. Fan-out fetch each candidate in parallel; reader-extract its body.
+/// 3. Fan-out fetch each candidate (two at a time); reader-extract its body.
 /// 4. Build the grounded prompt and stream the model's answer.
 ///
 /// All of (1–3) runs while the loading hero is visible; (4) starts as
@@ -95,6 +95,7 @@ final class SuperBrowseEngine {
             guard !Task.isCancelled else { session.cancel(); return }
             let batchEnd = min(batchStart + 2, candidates.count)
             let batch = Array(candidates[batchStart..<batchEnd])
+            var batchCancelled = false
             await withTaskGroup(of: (Int, SuperBrowseSource?).self) { group in
                 for (offset, candidate) in batch.enumerated() {
                     let index = batchStart + offset
@@ -106,12 +107,19 @@ final class SuperBrowseEngine {
                 }
                 var indexed: [(Int, SuperBrowseSource)] = []
                 for await (index, source) in group {
-                    guard !Task.isCancelled else { return }
+                    if Task.isCancelled {
+                        batchCancelled = true
+                        return
+                    }
                     if let source { indexed.append((index, source)) }
                 }
                 for (_, source) in indexed.sorted(by: { $0.0 < $1.0 }) {
                     session.appendSource(source)
                 }
+            }
+            if batchCancelled {
+                session.cancel()
+                return
             }
         }
         guard !Task.isCancelled else { session.cancel(); return }
