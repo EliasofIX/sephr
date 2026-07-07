@@ -8,11 +8,13 @@ import WebKit
 @MainActor
 enum ReaderExtractor {
 
-    /// Per-source character budget. LFM2-VL has a 32 768-token window;
-    /// at ~3.5 chars/token, each source can carry ~16 000 chars and the
-    /// six together still leave ~6 K tokens for system prompt + output.
-    /// We sit at 14 K to keep a comfortable margin.
-    static let perSourceCharacterBudget = 14_000
+    /// Per-source character budget for SuperBrowse fan-out. Inference
+    /// trims to `InferenceWorker.softPromptTokenCeiling` (8 192 tokens)
+    /// before prefill — ~28 K chars total across six sources. Reserve
+    /// ~2 K chars for the question + headers; ~4.3 K per source keeps
+    /// the assembled prompt under the ceiling without relying on native
+    /// tokenization of an 80 K+ blob (which has been observed to jetsam).
+    static let perSourceCharacterBudget = 4_300
 
     /// Summarize-mode budget — one page, no fan-out, so we can spend
     /// the whole window on it. 80 K chars ≈ 22 K input tokens, leaving

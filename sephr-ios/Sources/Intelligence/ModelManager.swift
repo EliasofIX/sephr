@@ -97,9 +97,11 @@ final class ModelManager {
             .appendingPathComponent("leap-kv-cache", isDirectory: true)
         try? FileManager.default.createDirectory(
             at: cacheDir, withIntermediateDirectories: true)
+        // Match the 8 K soft prompt ceiling — a 32 K KV slot on F16 was
+        // blowing the memory budget right when SuperBrowse starts prefill.
         let loadOptions = LiquidInferenceEngineManifestOptions(
             cacheOptions: .enabled(path: cacheDir.path),
-            contextSize: 32_768)
+            contextSize: 8_192)
         do {
             let runner = try await Leap.shared.load(
                 model: Self.modelName,
@@ -110,7 +112,7 @@ final class ModelManager {
             _ = await watcher.value
             await inferenceWorker.install(runner)
             state = .ready
-            Self.log.info("LEAP runner ready (F16, 32K context, KV cache on)")
+            Self.log.info("LEAP runner ready (F16, 8K context, KV cache on)")
         } catch {
             continuation.finish()
             _ = await watcher.value
